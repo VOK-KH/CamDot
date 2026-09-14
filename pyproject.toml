@@ -1,0 +1,35 @@
+[project]
+name = "facebook-reels-downloader"
+version = "0.1.0"
+description = "Download posts from Facebook, Instagram, TikTok, YouTube, and X."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "selenium>=4.6.0",
+    "yt-dlp[curl-cffi,default]",
+    "PySide6",
+    "imageio-ffmpeg>=0.6.0",
+]
+
+[project.scripts]
+reels = "app.main:main"
+reels-gui = "app.gui:main"
+reels-setup = "app.core.runtime:setup_main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# The artwork lives in images/ next to the package in a checkout; copy the sets
+# the UI needs inside the package for installs (app/core/icons.py looks in both places).
+[tool.hatch.build.targets.wheel.force-include]
+"images/icons" = "app/images/icons"
+"images/dialog" = "app/images/dialog"
+"images/botty" = "app/images/botty"
+
+[tool.uv]
+package = true

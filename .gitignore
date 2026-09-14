@@ -1,0 +1,8 @@
+output/
+downloads/
+preview_*.png
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/

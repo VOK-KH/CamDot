@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "python .cursor/hooks/inject_jobs.py"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "python .cursor/hooks/on_subagent_stop.py"
+      }
+    ]
+  }
+}

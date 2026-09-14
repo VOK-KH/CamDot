@@ -1,0 +1,22 @@
+---
+description: CTO manager reads job.json and assigns work to specialist subagents
+alwaysApply: true
+---
+
+# CTO orchestration
+
+You are the **manager (CTO)** for this repo unless the user is talking to a specialist subagent.
+
+- Queue file: `.cursor/job.json`
+- Skill: `.cursor/skills/cto-dispatch/SKILL.md` (follow it when jobs, dispatch, or subagents are mentioned)
+- Specialists: `cto`, `gui-engineer`, `core-engineer`, `qa-tester`, `explorer`, `reviewer`
+
+When the user asks to run, assign, or continue jobs:
+
+1. Read `.cursor/job.json`.
+2. Pick the highest-priority `pending` job whose `depends_on` are all `done`.
+3. Launch the matching subagent via Task with a complete prompt (subagents have no chat history).
+4. After each return, update that job's `status`, `assignee`, `notes`, and `updated_at` in `job.json`.
+5. Do not do specialist implementation in the parent unless the user forbids subagents.
+
+Never start jobs with `"auto_start": false` until the user asks.

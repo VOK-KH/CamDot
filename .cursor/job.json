@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "manager": "cto",
+  "policy": {
+    "max_parallel": 3,
+    "auto_start": false,
+    "update_status": true
+  },
+  "agents": [
+    "cto",
+    "explorer",
+    "gui-engineer",
+    "core-engineer",
+    "qa-tester",
+    "reviewer"
+  ],
+  "jobs": [
+    {
+      "id": "JOB-001",
+      "title": "Map GUI vs core ownership",
+      "assignee": "explorer",
+      "status": "pending",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/gui/", "app/core/", "app/main.py"],
+      "prompt": "Map how Collect, Grabber, and Download flow from GUI into app/core. List entry points and which specialist owns each area. Do not change code.",
+      "acceptance": [
+        "Short map of GUI widgets to core modules",
+        "Recommended assignee per follow-up job"
+      ],
+      "notes": "",
+      "updated_at": "2026-09-14T01:00:00Z"
+    },
+    {
+      "id": "JOB-002",
+      "title": "Harden collect/download tests",
+      "assignee": "qa-tester",
+      "status": "pending",
+      "priority": 2,
+      "depends_on": ["JOB-001"],
+      "files": ["tests/"],
+      "prompt": "After JOB-001's map exists, find gaps in tests/ for collect and download helpers. Add focused unittest cases without starting the live GUI or hitting the network.",
+      "acceptance": [
+        "uv run python -m unittest discover -s tests -v passes",
+        "At least one new regression test if a gap exists"
+      ],
+      "notes": "",
+      "updated_at": "2026-09-14T01:00:00Z"
+    },
+    {
+      "id": "JOB-003",
+      "title": "Grabber monitor edge states",
+      "assignee": "gui-engineer",
+      "status": "pending",
+      "priority": 3,
+      "depends_on": ["JOB-001"],
+      "files": ["app/gui/widgets/grabber.py", "app/gui/window.py"],
+      "prompt": "Review the Link Grabber monitor (abort, pin, hide) against README behavior. Fix only clear mismatches. Keep JDownloader-like layout.",
+      "acceptance": [
+        "Abort/pin/hide behavior matches README",
+        "Existing GUI tests still pass"
+      ],
+      "notes": "",
+      "updated_at": "2026-09-14T01:00:00Z"
+    },
+    {
+      "id": "JOB-004",
+      "title": "Resume leftover .part files",
+      "assignee": "core-engineer",
+      "status": "pending",
+      "priority": 3,
+      "depends_on": ["JOB-001"],
+      "files": ["app/core/download.py", "app/core/jobs.py"],
+      "prompt": "Confirm Continue Downloads resumes leftover .part files and skips finished rows. Fix bugs only; do not change defaults for workers/fragments.",
+      "acceptance": [
+        "Resume/skip behavior documented in the return",
+        "Unit tests cover the helper if logic changes"
+      ],
+      "notes": "",
+      "updated_at": "2026-09-14T01:00:00Z"
+    },
+    {
+      "id": "JOB-005",
+      "title": "Review batch JOB-002..004",
+      "assignee": "reviewer",
+      "status": "pending",
+      "priority": 4,
+      "depends_on": ["JOB-002", "JOB-003", "JOB-004"],
+      "files": ["app/", "tests/"],
+      "prompt": "Read-only review of JOB-002, JOB-003, and JOB-004. Check acceptance, regressions, and whether the CTO should mark them done.",
+      "acceptance": [
+        "Severity-tagged findings",
+        "Explicit done vs blocked recommendation per job"
+      ],
+      "notes": "",
+      "updated_at": "2026-09-14T01:00:00Z"
+    }
+  ]
+}
