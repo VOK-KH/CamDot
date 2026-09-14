@@ -1105,9 +1105,15 @@ class MainWindow(QMainWindow):
 
     def _remove_all(self):
         model, _proxy, _table = self._pack()
-        count = model.rowCount()
-        if not count:
+        reels = [model.reel_at(row) for row in range(model.rowCount())]
+        if not reels:
             return
+        self._delete_reel_files(
+            reels,
+            "Delete file?",
+            "Remove all items from the list.\n\nAlso delete the file(s) from disk?",
+        )
+        count = len(reels)
         self.clear_rows()
         self._append_log(f"Removed {count} item(s) from the list.")
 
@@ -1255,6 +1261,11 @@ class MainWindow(QMainWindow):
                       if model.reel_at(row).checked]
         if not reels:
             return
+        self._delete_reel_files(
+            reels,
+            "Delete file?",
+            "Remove from the list.\n\nAlso delete the file(s) from disk?",
+        )
         removed = model.remove_urls([reel.url for reel in reels])
         if removed:
             self._append_log(f"Removed {removed} item(s) from the list.")
@@ -1448,9 +1459,7 @@ class MainWindow(QMainWindow):
         elif chosen == remove:
             self._remove_selected()
         elif chosen == remove_all:
-            count = model.rowCount()
-            self.clear_rows()
-            self._append_log(f"Removed {count} item(s) from the list.")
+            self._remove_all()
 
     def _open_reel(self, index):
         if index.column() == COL_CHECK:
@@ -1461,15 +1470,76 @@ class MainWindow(QMainWindow):
 
     def _reveal(self, reel):
         folder = os.path.abspath(os.path.join(self._output_root(), self._channel()))
-        if reel.filepath and os.path.isfile(reel.filepath):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(reel.filepath))
+        files = store.list_output_files(folder, reel.rid, reel.filepath)
+        if files:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(files[0]))
             return
-        needle = f"[{reel.rid}]"
-        for name in os.listdir(folder) if os.path.isdir(folder) else []:
-            if needle in name or name.startswith(reel.rid):
-                QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.join(folder, name)))
-                return
         self._open_folder()
+
+    def _files_for_reels(self, reels):
+        folder = os.path.abspath(os.path.join(self._output_root(), self._channel()))
+        files, rids = [], []
+        seen = set()
+        for reel in reels:
+            for path in store.list_output_files(folder, reel.rid, reel.filepath):
+                if path not in seen:
+                    seen.add(path)
+                    files.append(path)
+            if reel.rid:
+                rids.append(reel.rid)
+        return files, rids
+
+    def _delete_reel_files(self, reels, title, text, statuses=None):
+        """Ask whether leftover files should be deleted. Yes deletes; No keeps them."""
+        if statuses is not None:
+            reels = [reel for reel in reels if reel.status in statuses]
+        files, rids = self._files_for_reels(reels)
+        if not files:
+            return False
+        names = "\n".join(os.path.basename(path) for path in files[:8])
+        extra = f"\n…and {len(files) - 8} more" if len(files) > 8 else ""
+        answer = alert(
+            self, "question", title,
+            f"{text}\n\n{names}{extra}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        deleted = 0
+        for path in files:
+            try:
+                os.remove(path)
+                deleted += 1
+            except OSError as exc:
+                self._append_log(f"Could not delete {path}: {exc}")
+        store.forget_archive_ids(
+            os.path.join(self._output_root(), self._channel(), store.ARCHIVE_NAME),
+            rids,
+        )
+        if deleted:
+            self._append_log(f"Deleted {deleted} file(s) from disk.")
+        return True
+
+    def _notify_downloads_finished(self, message=""):
+        """Popup after a download job so a finished run is obvious even if the window is behind."""
+        counts = self.model.counts()
+        done = counts.get("done", 0)
+        failed = counts.get("failed", 0)
+        cancelled = counts.get("cancelled", 0)
+        total = self.model.rowCount()
+        if message == "Cancelled." or cancelled and not done and not failed:
+            kind, title = "warning", "Downloads cancelled"
+        elif failed:
+            kind, title = "warning", "Downloads finished"
+        else:
+            kind, title = "info", "Downloads finished"
+        lines = [f"{done} of {total} item(s) downloaded."]
+        if failed:
+            lines.append(f"{failed} failed.")
+        if cancelled:
+            lines.append(f"{cancelled} cancelled.")
+        alert(self, kind, title, "\n".join(lines), stay_on_top=True)
 
     # -------------------------------------------------------------- actions
 
@@ -2007,6 +2077,19 @@ class MainWindow(QMainWindow):
     def _on_finished(self, message):
         if message:
             self._append_log(message)
+        if getattr(self._worker, "mode", "") == "download":
+            leftovers = [
+                self.model.reel_at(row) for row in range(self.model.rowCount())
+                if self.model.reel_at(row).status in ("failed", "cancelled")
+            ]
+            self._delete_reel_files(
+                leftovers,
+                "Download failed",
+                "A download failed or was cancelled.\n\n"
+                "Delete leftover file(s) from disk?",
+                statuses=("failed", "cancelled"),
+            )
+            self._notify_downloads_finished(message)
         if self._grabber_job:
             message = "Done" if not message else message
             # More queued links keep the run going, so only the last one is done.

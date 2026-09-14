@@ -82,6 +82,53 @@ def find_output_file(output_dir, rid, partial=False):
     return ""
 
 
+def list_output_files(output_dir, rid, filepath=""):
+    """Every leftover file for a reel: the saved path, .part/.ytdl sidecars, and id matches."""
+    found, seen = [], set()
+
+    def add(path):
+        if not path:
+            return
+        try:
+            real = os.path.abspath(path)
+        except OSError:
+            return
+        name = os.path.basename(real)
+        if name in (LIST_NAME, ARCHIVE_NAME):
+            return
+        if not os.path.isfile(real) or real in seen:
+            return
+        seen.add(real)
+        found.append(real)
+
+    add(filepath)
+    if filepath:
+        add(filepath + ".part")
+        add(filepath + ".ytdl")
+    if rid and os.path.isdir(output_dir):
+        for name in os.listdir(output_dir):
+            if _matches_id(name, rid):
+                add(os.path.join(output_dir, name))
+    return found
+
+
+def forget_archive_ids(path, rids):
+    """Drop archive lines so a deleted file can be downloaded again."""
+    drop = {str(rid) for rid in rids if rid}
+    if not drop or not os.path.isfile(path):
+        return
+    keep = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.split()
+            last = parts[-1] if parts else ""
+            if last in drop:
+                continue
+            keep.append(line)
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(keep)
+
+
 def reconcile_entries(entries, output_dir):
     """Mark finished files done and keep percent for leftover .part files."""
     archive = read_archive_ids(os.path.join(output_dir, ARCHIVE_NAME))

@@ -53,3 +53,23 @@ class Store(unittest.TestCase):
             self.assertEqual(entries[0]["status"], "queued")
             self.assertEqual(entries[0]["percent"], 50.0)
             self.assertEqual(entries[0]["filepath"], part)
+
+    def test_list_output_files_includes_part_and_named_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            finished = os.path.join(folder, "clip [abc].mp4")
+            part = os.path.join(folder, "clip [abc].mp4.part")
+            other = os.path.join(folder, "other [zzz].mp4")
+            for path in (finished, part, other):
+                with open(path, "wb") as f:
+                    f.write(b"x")
+            found = store.list_output_files(folder, "abc", finished)
+            self.assertEqual(set(found), {os.path.abspath(finished), os.path.abspath(part)})
+
+    def test_forget_archive_ids_drops_matching_lines(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, store.ARCHIVE_NAME)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("youtube abc\nyoutube def\n")
+            store.forget_archive_ids(path, ["abc"])
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "youtube def\n")

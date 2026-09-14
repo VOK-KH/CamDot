@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QHeaderView,
+    QMessageBox,
     QPushButton,
     QToolButton,
 )
@@ -825,6 +826,57 @@ class GuiSmoke(unittest.TestCase):
         self.window._remove_selected()
         self.assertEqual(self.window.model.urls(), [URLS[1]])
         self.assertEqual(self.window.counter.text(), "1 ● 0")
+
+    def test_remove_asks_before_deleting_the_file(self):
+        path = os.path.join(self.folder.name, "clip [111].mp4")
+        with open(path, "wb") as f:
+            f.write(b"x")
+        self.window.set_urls(URLS)
+        self.window.model.apply_event(URLS[0], {"status": "done", "filepath": path})
+        self.window.table.selectRow(0)
+        with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes) as asked:
+            self.window._remove_selected()
+        self.assertEqual(asked.call_args.args[1], "question")
+        self.assertFalse(os.path.isfile(path))
+        self.assertEqual(self.window.model.urls(), [URLS[1]])
+
+    def test_remove_keeps_the_file_when_delete_is_declined(self):
+        path = os.path.join(self.folder.name, "clip [111].mp4")
+        with open(path, "wb") as f:
+            f.write(b"x")
+        self.window.set_urls(URLS)
+        self.window.model.apply_event(URLS[0], {"status": "done", "filepath": path})
+        self.window.table.selectRow(0)
+        with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.No):
+            self.window._remove_selected()
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(self.window.model.urls(), [URLS[1]])
+
+    def test_failed_download_asks_to_delete_leftover_file(self):
+        path = os.path.join(self.folder.name, "clip [111].mp4.part")
+        with open(path, "wb") as f:
+            f.write(b"x")
+        self.window.set_urls(URLS)
+        self.window.model.apply_event(URLS[0], {"status": "failed", "filepath": path})
+        self.window._worker = type("W", (), {"mode": "download", "request_stop": lambda self: None})()
+        with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes) as asked:
+            self.window._on_finished("1 item(s) failed.")
+        self.assertEqual(asked.call_args_list[0].args[1], "question")
+        self.assertEqual(asked.call_args_list[-1].args[1], "warning")
+        self.assertFalse(os.path.isfile(path))
+        self.assertEqual(self.window.model.urls(), URLS)
+
+    def test_download_job_shows_a_finished_notification(self):
+        self.window.set_urls(URLS)
+        self.window.model.apply_event(URLS[0], {"status": "done"})
+        self.window.model.apply_event(URLS[1], {"status": "done"})
+        self.window._worker = type("W", (), {"mode": "download", "request_stop": lambda self: None})()
+        with patch.object(window_module, "alert") as asked:
+            self.window._on_finished("")
+        self.assertEqual(asked.call_count, 1)
+        self.assertEqual(asked.call_args.args[1], "info")
+        self.assertEqual(asked.call_args.args[2], "Downloads finished")
+        self.assertIn("2 of 2", asked.call_args.args[3])
 
     def test_remove_uses_checked_rows_when_nothing_is_selected(self):
         self.window.set_urls(URLS)
