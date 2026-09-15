@@ -9,14 +9,11 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from app.core.fonts import register_fonts, setup_app_font
-
-register_fonts()
-
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from app.core import theme
+from app.core.fonts import setup_app_font
 from app.gui import MainWindow
 
 STATUSES = ["done"] * 14 + ["downloading"] * 3 + ["queued"] * 8 + ["failed"]

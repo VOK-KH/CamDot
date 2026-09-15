@@ -75,7 +75,7 @@ def pick_ui_family():
 
 
 def register_fonts():
-    """Load system/bundled fonts. Call before QApplication when possible."""
+    """Load system/bundled fonts. Requires QGuiApplication (e.g. QApplication)."""
     families = set(QFontDatabase.families())
     if not any(name in families for name in _PREFERRED[:4]):
         _register_font_files()

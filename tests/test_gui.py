@@ -7,10 +7,6 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from app.core.fonts import register_fonts
-
-register_fonts()
-
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt, QThreadPool
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
@@ -54,6 +50,7 @@ from app.gui import window as window_module
 from app.gui.dialogs.links import AddLinksDialog
 from app.gui.dialogs.platforms import PlatformsDialog
 from app.gui.widgets import GrabberPanel
+from app.core.fonts import setup_app_font
 from app.core.runtime import APP_FOLDER_NAME, default_output_root
 from app.gui.dialogs.settings import SettingsDialog
 from app.gui.jobs import JobWorker
@@ -68,6 +65,7 @@ class Icons(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        setup_app_font(cls.app)
 
     def test_every_referenced_icon_file_exists(self):
         names = [
@@ -150,6 +148,7 @@ class GuiSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        setup_app_font(cls.app)
 
     def setUp(self):
         # Never touch the real user settings while testing.

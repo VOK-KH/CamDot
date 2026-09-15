@@ -104,7 +104,7 @@ from app.core.model import (
     format_eta,
 )
 from app import __version__
-from app.core.fonts import register_fonts, setup_app_font
+from app.core.fonts import setup_app_font
 from app.core.runtime import (
     APP_NAME,
     SETTINGS_ORG,
@@ -2630,7 +2630,6 @@ class MainWindow(QMainWindow):
 
 def run_gui(argv=None):
     argv = argv if argv is not None else sys.argv
-    register_fonts()
     app = QApplication.instance() or QApplication(argv)
     setup_app_font(app)
     app.setStyle("Fusion")
