@@ -32,9 +32,12 @@ jobs:
       - run: uv sync --group dev
       - run: uv run python -m unittest discover -s tests -v
       - name: Write Telegram secrets for build
-        if: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN != '' }}
         shell: pwsh
+        env:
+          CAMDOT_TELEGRAM_BOT_TOKEN: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN }}
+          CAMDOT_TELEGRAM_CHAT_ID: ${{ secrets.CAMDOT_TELEGRAM_CHAT_ID }}
         run: |
+          if (-not $env:CAMDOT_TELEGRAM_BOT_TOKEN) { exit 0 }
           @"
           BOT_TOKEN = "$env:CAMDOT_TELEGRAM_BOT_TOKEN"
           CHAT_ID = "$env:CAMDOT_TELEGRAM_CHAT_ID"
