@@ -449,6 +449,28 @@ class DownloadKwargs(unittest.TestCase):
         self.assertEqual(captured["args"][-1], "My Caption")
 
 
+    def test_download_urls_skips_source_folder_when_grouping_disabled(self):
+        captured = {}
+
+        def fake_one(*args, **kwargs):
+            captured["source_folder"] = args[-1]
+            return 0
+
+        url = "https://www.facebook.com/reel/99"
+        with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as state:
+            with patch("app.core.runtime.state_dir", return_value=state):
+                with patch("app.core.download._download_one", side_effect=fake_one):
+                    failures = download_urls(
+                        "jireel",
+                        [url],
+                        output_root=downloads,
+                        log=lambda *_: None,
+                        group_by_source=False,
+                    )
+        self.assertEqual(failures, 0)
+        self.assertEqual(captured["source_folder"], "")
+
+
 class DownloadLayout(unittest.TestCase):
     def test_empty_download_keeps_media_dir_under_output_root(self):
         with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as state:

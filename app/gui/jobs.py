@@ -24,7 +24,7 @@ class JobWorker(QObject):
         fragments=DEFAULT_FRAGMENTS, output_root=None, chrome_binary="",
         ffmpeg_location="", cookies_browser="", feed=None, filename_template="",
         cookies_file="", dateafter="", limit_rate="",
-        media_kinds=None, source_folders=None,
+        media_kinds=None, source_folders=None, group_by_source=True,
     ):
         super().__init__()
         self.mode = mode
@@ -44,6 +44,7 @@ class JobWorker(QObject):
         self.limit_rate = limit_rate
         self.media_kinds = media_kinds
         self.source_folders = source_folders or {}
+        self.group_by_source = group_by_source
         self._stop = False
         self._login = threading.Event()
         self._last_emit = {}
@@ -127,6 +128,7 @@ class JobWorker(QObject):
                 limit_rate=self.limit_rate,
                 media_kinds=self.media_kinds,
                 source_folders=self.source_folders,
+                group_by_source=self.group_by_source,
             )
             self.finished.emit("" if not failures else f"{failures} item(s) failed.")
         except StopRequested:

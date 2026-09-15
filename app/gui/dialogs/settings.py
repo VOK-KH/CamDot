@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.download import DEFAULT_FRAGMENTS, DEFAULT_WORKERS, OUTPUT_TEMPLATE, resolve_filename_template
-from app.core.runtime import default_output_root, resolve_output_root
+from app.core.runtime import default_output_root, resolve_output_root, state_dir
 from app.core.theme import DEFAULT_DARK
 
 COOKIE_BROWSERS = (
@@ -91,6 +92,19 @@ class SettingsDialog(QDialog):
         self.channel.setPlaceholderText("auto from the source URL")
         self.output = PathField("directory")
         self.output.setText(default_output_root())
+        self.output.setToolTip(
+            "Parent folder for finished media.\n"
+            "Each output name becomes a subfolder here, for example:\n"
+            f"{default_output_root()}\\MyChannel\\"
+        )
+        self.group_downloads = QCheckBox("Create a subfolder for each download")
+        self.group_downloads.setToolTip(
+            "When enabled, each item is saved in its own folder under the output name.\n"
+            "When disabled, files are saved directly in the output name folder."
+        )
+        self.app_data = QLabel(state_dir())
+        self.app_data.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.app_data.setWordWrap(True)
         self.filename = QLineEdit()
         self.filename.setPlaceholderText(OUTPUT_TEMPLATE)
         self.filename.setToolTip(
@@ -129,6 +143,8 @@ class SettingsDialog(QDialog):
             self.tiktok_age.addItem(label, value)
         form.addRow("Output name", self.channel)
         form.addRow("Download folder", self.output)
+        form.addRow("", self.group_downloads)
+        form.addRow("App data folder", self.app_data)
         form.addRow("File name", self.filename)
         form.addRow("Parallel downloads", self.workers)
         form.addRow("Fragments per item", self.fragments)
@@ -194,6 +210,8 @@ class SettingsDialog(QDialog):
         get = self.settings.value
         self.channel.setText(get("channel", "", str))
         self.output.setText(resolve_output_root(get("output_root", "", str)))
+        self.group_downloads.setChecked(get("group_downloads", True, bool))
+        self.app_data.setText(state_dir())
         self.filename.setText(get("filename_template", OUTPUT_TEMPLATE, str))
         self.workers.setValue(int(get("workers", DEFAULT_WORKERS)))
         self.fragments.setValue(int(get("fragments", DEFAULT_FRAGMENTS)))
@@ -221,6 +239,8 @@ class SettingsDialog(QDialog):
     def restore_defaults(self):
         self.channel.clear()
         self.output.setText(default_output_root())
+        self.group_downloads.setChecked(True)
+        self.app_data.setText(state_dir())
         self.filename.setText(OUTPUT_TEMPLATE)
         self.workers.setValue(DEFAULT_WORKERS)
         self.fragments.setValue(DEFAULT_FRAGMENTS)
@@ -245,6 +265,7 @@ class SettingsDialog(QDialog):
         output = self.output.text() or default_output_root()
         self.settings.setValue("channel", self.channel.text().strip())
         self.settings.setValue("output_root", os.path.normpath(output))
+        self.settings.setValue("group_downloads", self.group_downloads.isChecked())
         self.settings.setValue(
             "filename_template", resolve_filename_template(self.filename.text())
         )

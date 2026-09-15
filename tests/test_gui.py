@@ -177,6 +177,12 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window.table.model().columnCount(), len(COLUMNS))
         self.assertEqual(COLUMNS[:2], ("#", ""))
 
+    def test_status_bar_shows_version_label(self):
+        from app import __version__
+
+        self.assertTrue(hasattr(self.window, "version_label"))
+        self.assertEqual(self.window.version_label.text(), f"v{__version__}")
+
     def test_index_comes_before_the_checkbox_and_columns_can_move(self):
         header = self.window.table.horizontalHeader()
         self.assertTrue(header.sectionsMovable())
@@ -1145,6 +1151,12 @@ class GuiSmoke(unittest.TestCase):
         self.assertFalse(self.window._settings.value("auto_update", type=bool))
         self.assertEqual(self.window._speed()["cookies_browser"], "chrome:Default")
 
+    def test_settings_dialog_saves_group_downloads(self):
+        dialog = SettingsDialog(self.window._settings, self.window)
+        dialog.group_downloads.setChecked(False)
+        dialog.accept()
+        self.assertFalse(self.window._settings.value("group_downloads", type=bool))
+
     def test_settings_tools_tab_packs_fields_to_the_top(self):
         dialog = SettingsDialog(self.window._settings, self.window)
         form = dialog.chrome.parentWidget().layout()
@@ -1349,9 +1361,29 @@ class GuiSmoke(unittest.TestCase):
         with patch.object(window_module, "check_for_update", return_value=info):
             with patch.object(self.window, "app_update_found") as found:
                 with patch.object(self.window, "app_update_uptodate") as uptodate:
-                    self.window._run_app_update_check(interactive=True)
+                    self.window._run_app_update_check(
+                        prompt_update=True, notify_uptodate=False
+                    )
         found.emit.assert_called_once_with(info)
         uptodate.emit.assert_not_called()
+
+    def test_startup_update_check_stays_silent_when_current(self):
+        with patch.object(window_module, "check_for_update", return_value=None):
+            with patch.object(self.window, "app_update_found") as found:
+                with patch.object(self.window, "app_update_uptodate") as uptodate:
+                    self.window._run_app_update_check(
+                        prompt_update=True, notify_uptodate=False
+                    )
+        found.emit.assert_not_called()
+        uptodate.emit.assert_not_called()
+
+    def test_manual_update_check_notifies_when_current(self):
+        with patch.object(window_module, "check_for_update", return_value=None):
+            with patch.object(self.window, "app_update_uptodate") as uptodate:
+                self.window._run_app_update_check(
+                    prompt_update=True, notify_uptodate=True
+                )
+        uptodate.emit.assert_called_once()
 
 
 if __name__ == "__main__":

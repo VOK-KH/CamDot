@@ -804,6 +804,7 @@ def download_urls(
     limit_rate="",
     media_kinds=None,
     source_folders=None,
+    group_by_source=True,
 ):
     """Download every item URL, `workers` at a time. Returns the number of failures."""
     output_root = output_root or default_output_root()
@@ -834,7 +835,9 @@ def download_urls(
                 log, on_progress, should_stop, group, cookies_browser,
                 filename_template, cookies_file, dateafter, limit_rate,
                 kinds,
-                folders.get(url) or source_folder_name("", "", reel_id(url)),
+                folders.get(url)
+                if url in folders
+                else (source_folder_name("", "", reel_id(url)) if group_by_source else ""),
             ): url
             for url in urls
         }

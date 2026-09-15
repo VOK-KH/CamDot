@@ -1080,6 +1080,10 @@ class MainWindow(QMainWindow):
             ("jobs", "activity", "Running work and its combined speed", "88 downloading · 88.8 MB/s"),
         ):
             bar.addPermanentWidget(self._stat(key, name, tooltip, sample))
+        self.version_label = QLabel(f"v{__version__}")
+        self.version_label.setObjectName("versionLabel")
+        self.version_label.setToolTip(f"{APP_NAME} {__version__}")
+        bar.addPermanentWidget(self.version_label)
         self.setStatusBar(bar)
         return bar
 
@@ -1358,13 +1362,15 @@ class MainWindow(QMainWindow):
     def _check_app_updates(self):
         self._append_log(f"Checking for {APP_NAME} updates…")
         threading.Thread(
-            target=self._run_app_update_check, kwargs={"interactive": True}, daemon=True
+            target=self._run_app_update_check,
+            kwargs={"prompt_update": True, "notify_uptodate": True},
+            daemon=True,
         ).start()
 
-    def _run_app_update_check(self, *, interactive=False):
+    def _run_app_update_check(self, *, prompt_update=False, notify_uptodate=False):
         info = check_for_update()
         if not info:
-            if interactive:
+            if notify_uptodate:
                 self.app_update_uptodate.emit()
             return
         try:
@@ -1374,7 +1380,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.tools_checked.emit(format_update_message(info))
-        if interactive:
+        if prompt_update:
             self.app_update_found.emit(info)
 
     @Slot()
@@ -2334,13 +2340,21 @@ class MainWindow(QMainWindow):
         elif self.model.counts().get("done"):
             self._append_log(f"Continuing {len(urls)} remaining item(s).")
         wanted = set(urls)
-        folders = {
-            reel.url: source_folder_name(reel.title, reel.description, reel.rid)
-            for reel in (self.model.reel_at(row) for row in range(self.model.rowCount()))
-            if reel.url in wanted
-        }
+        group_by_source = self._settings.value("group_downloads", True, bool)
+        folders = {}
+        if group_by_source:
+            folders = {
+                reel.url: source_folder_name(reel.title, reel.description, reel.rid)
+                for reel in (self.model.reel_at(row) for row in range(self.model.rowCount()))
+                if reel.url in wanted
+            }
         self._run(JobWorker(
-            "download", channel, urls=urls, source_folders=folders, **self._speed(),
+            "download",
+            channel,
+            urls=urls,
+            source_folders=folders,
+            group_by_source=group_by_source,
+            **self._speed(),
         ))
 
     def _speed(self):
@@ -2713,7 +2727,7 @@ def run_gui(argv=None):
     if settings.value("check_app_updates", True, bool):
         threading.Thread(
             target=window._run_app_update_check,
-            kwargs={"interactive": True},
+            kwargs={"prompt_update": True, "notify_uptodate": False},
             daemon=True,
         ).start()
     return app.exec()
