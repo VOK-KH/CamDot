@@ -11,6 +11,7 @@ from app.core.runtime import (
     chrome_profile_dir,
     collect_csv_path,
     default_output_root,
+    gui_settings_path,
     resolve_ffmpeg,
     resolve_output_root,
     runtime_versions,
@@ -92,6 +93,7 @@ class RuntimeTools(unittest.TestCase):
                     os.path.join(folder, "channels", "jireel"),
                 )
                 self.assertEqual(util_cache_dir(), os.path.join(folder, "cache"))
+                self.assertEqual(gui_settings_path(), os.path.join(folder, "gui.ini"))
 
     def test_sweep_moves_csv_and_chrome_profile(self):
         with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as state:

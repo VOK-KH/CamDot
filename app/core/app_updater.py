@@ -38,26 +38,40 @@ def download_file(url, dest, *, timeout=300, block_size=256 * 1024):
     return dest
 
 
-def run_windows_installer(path):
-    """Launch the Inno Setup installer and return True when started."""
-    if sys.platform != "win32":
-        return False
-    path = os.path.abspath(path)
-    if not os.path.isfile(path):
-        return False
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen([path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"], creationflags=flags)
-    return True
+def is_installed_build():
+    """True for a packaged CamDot.exe, not `uv run camdot`."""
+    return bool(getattr(sys, "frozen", False))
 
 
-def apply_update(info):
-    """Download the platform asset and run the Windows installer."""
+def download_update(info):
+    """Download the GitHub asset for this platform into AppData/updates."""
     url = info.get("download_url") or ""
     asset = info.get("asset_name") or "CamDot-Setup.exe"
     if not url:
         raise ValueError("No download URL in update info")
     dest = download_path(asset)
-    download_file(url, dest)
-    if not run_windows_installer(dest):
-        os.startfile(dest)  # noqa: S606 — fallback opens installer on Windows
+    return download_file(url, dest)
+
+
+def launch_installer(path):
+    """Start the downloaded installer so it can replace this app."""
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        return False
+    if sys.platform == "win32":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            [path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
+            creationflags=flags,
+        )
+        return True
+    os.startfile(path)  # noqa: S606
+    return True
+
+
+def apply_update(info):
+    """Download the platform asset and run the Windows installer."""
+    dest = download_update(info)
+    if not launch_installer(dest):
+        os.startfile(dest)  # noqa: S606
     return dest

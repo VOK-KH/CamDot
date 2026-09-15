@@ -83,6 +83,30 @@ def state_dir():
     return path
 
 
+def gui_settings_path():
+    """INI file for GUI settings under AppData (not the Windows registry)."""
+    return os.path.join(state_dir(), "gui.ini")
+
+
+def gui_settings():
+    """Load QSettings from AppData; copy one-time from the old native store."""
+    from PySide6.QtCore import QSettings
+
+    path = gui_settings_path()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    settings = QSettings(path, QSettings.Format.IniFormat)
+    if settings.allKeys():
+        return settings
+    native = QSettings(SETTINGS_ORG, "gui")
+    keys = native.allKeys()
+    if not keys:
+        return settings
+    for key in keys:
+        settings.setValue(key, native.value(key))
+    settings.sync()
+    return settings
+
+
 def chrome_profile_dir():
     """Persistent Chrome user-data-dir for Selenium logins."""
     return os.path.join(state_dir(), "chrome-profile")

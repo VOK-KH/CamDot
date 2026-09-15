@@ -13,6 +13,7 @@ from app.core.urls import (
     collection_strategy,
     detect_platform,
     extract_supported_urls,
+    is_supported_source,
     looks_shell_truncated,
     normalize_channel_url,
     normalize_source_url,
@@ -37,6 +38,14 @@ class ClipboardUrls(unittest.TestCase):
                 "https://youtu.be/abc123",
                 "https://www.bilibili.tv/en/video/4794551511289856",
             ],
+        )
+
+    def test_generic_and_unknown_hosts_are_not_extracted(self):
+        self.assertEqual(
+            extract_supported_urls(
+                "https://fewfeed.app https://www.dramabox.com/watch/abc ftp://x.com/nope"
+            ),
+            [],
         )
 
 
@@ -333,11 +342,13 @@ class NormalizeSourceUrl(unittest.TestCase):
     def test_x_timeline_is_a_feed(self):
         self.assertEqual(normalize_source_url("https://x.com/name"), "https://x.com/name")
 
-    def test_generic_https_is_kept(self):
-        self.assertEqual(
-            normalize_source_url("https://www.dramabox.com/watch/abc"),
-            "https://www.dramabox.com/watch/abc",
-        )
+    def test_generic_https_is_not_processed(self):
+        self.assertFalse(is_supported_source("https://fewfeed.app"))
+        self.assertFalse(is_supported_source("https://www.dramabox.com/watch/abc"))
+        with self.assertRaises(ValueError):
+            normalize_source_url("https://fewfeed.app")
+        with self.assertRaises(ValueError):
+            normalize_source_url("https://www.dramabox.com/watch/abc")
 
     def test_facebook_page_id_becomes_a_profile_url(self):
         self.assertEqual(

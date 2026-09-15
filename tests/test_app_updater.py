@@ -62,6 +62,16 @@ class AppUpdaterTests(unittest.TestCase):
             download_file.assert_called_once()
             popen.assert_called_once()
 
+    @patch("app.core.app_updater.subprocess.Popen")
+    def test_launch_installer_starts_setup(self, popen):
+        with tempfile.TemporaryDirectory() as folder:
+            dest = os.path.join(folder, "CamDot-Setup.exe")
+            with open(dest, "wb") as handle:
+                handle.write(b"x")
+            with patch.object(sys, "platform", "win32"):
+                self.assertTrue(app_updater.launch_installer(dest))
+        popen.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

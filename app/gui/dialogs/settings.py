@@ -124,7 +124,10 @@ class SettingsDialog(QDialog):
         self.close_to_tray.setToolTip(
             "Close and minimise hide the window; clipboard grab and downloads continue."
         )
-        self.check_app_updates = QCheckBox("Check for app updates on startup")
+        self.check_app_updates = QCheckBox("Check GitHub for app updates (startup and every few hours)")
+        self.check_app_updates.setToolTip(
+            "Calls the GitHub Releases API. If a newer tag exists, CamDot asks before downloading."
+        )
         self.auto_update = QCheckBox("Automatically update download tools daily (dev installs only)")
         self.auto_update.setToolTip(
             "Installed CamDot builds bundle their download tools; this applies when running from source."

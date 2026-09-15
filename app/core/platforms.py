@@ -126,14 +126,13 @@ PLATFORM_CATALOG = [
         "id": "generic",
         "name": "Other HTTPS",
         "hosts": ("any other http(s) host",),
-        "status": ACTIVE,
+        "status": COMING_SOON,
         "icon": "platform-generic",
         "features": [
-            "Any other http(s) link CamDot can recognize",
-            "Success depends on the host",
+            "Unknown hosts are listed here only",
         ],
         "limits": [
-            "No dedicated host polish",
+            "Not extracted or downloaded until the site is supported",
         ],
     },
     {

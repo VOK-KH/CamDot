@@ -467,6 +467,24 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window.grab_model.urls(), URLS)
         self.assertEqual(self.window.tabs.currentIndex(), 1)
 
+    def test_views_default_is_video_only(self):
+        self.assertEqual(self.window.views.checked_kinds(), {"video"})
+        self.assertTrue(self.window.views._kind_boxes["video"].isChecked())
+        self.assertFalse(self.window.views._kind_boxes["music"].isChecked())
+        self.assertFalse(self.window.views._kind_boxes["image"].isChecked())
+
+    def test_views_kinds_persist_in_settings(self):
+        self.window.views._kind_boxes["music"].setChecked(True)
+        self.window.views._kind_boxes["image"].setChecked(True)
+        self.window._save_settings()
+        self.assertEqual(self.window._settings.value("views_kinds"), "image,music,video")
+        again = MainWindow(settings=self.window._settings)
+        self.assertEqual(again.views.checked_kinds(), {"video", "music", "image"})
+        again._quitting = True
+        again.close()
+        again.deleteLater()
+        QApplication.processEvents()
+
     def test_views_kind_narrows_both_tables(self):
         self.window.set_urls(URLS)
         self.window.add_grab_urls(URLS)
@@ -488,9 +506,11 @@ class GuiSmoke(unittest.TestCase):
             "https://www.tiktok.com/@x/photo/99",
         ])
         window._refresh_views()
-        kinds = {box.text().split()[0]: box for box in window.views._kind_boxes.values()}
         self.assertIn("Video", " ".join(box.text() for box in window.views._kind_boxes.values()))
         self.assertGreater(window.views.host_list.count(), 0)
+        self.assertEqual(window.table.model().rowCount(), 1)
+        window.views._kind_boxes["image"].setChecked(True)
+        self.assertEqual(window.table.model().rowCount(), 2)
         window.views._kind_boxes["video"].setChecked(False)
         self.assertEqual(window.table.model().rowCount(), 1)
         window.views._kind_boxes["video"].setChecked(True)
@@ -745,6 +765,27 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(started, [])
         self.assertEqual(self.window._grab_queue, [])
         self.assertEqual(warned[0][1], "warning")
+
+    def test_unsupported_https_is_not_extracted(self):
+        started, warned = [], []
+        self.window._run = lambda worker, merge=False: started.append(worker)
+        self.window._ask_links = lambda current="": "https://fewfeed.app"
+        with patch.object(window_module, "alert", lambda *args: warned.append(args)):
+            self.window._add_links()
+        self.assertEqual(started, [])
+        self.assertEqual(self.window._grab_queue, [])
+        self.assertTrue(self.window.grab_panel.isHidden())
+        self.assertEqual(warned[0][1], "warning")
+
+    def test_clipboard_unsupported_link_does_not_open_grabber(self):
+        started = []
+        self.window._run = lambda worker, merge=False: started.append(worker)
+        self.window.act_grabber.setChecked(True)
+        QApplication.clipboard().setText("https://fewfeed.app")
+        self.window._on_clipboard_changed()
+        self.assertEqual(started, [])
+        self.assertEqual(self.window._grab_queue, [])
+        self.assertTrue(self.window.grab_panel.isHidden())
 
     def test_cancelling_the_add_links_dialog_changes_nothing(self):
         started = []
@@ -1299,7 +1340,7 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(int(self.window._settings.value("workers")), 5)
         self.assertEqual(int(self.window._settings.value("fragments")), 12)
         self.assertEqual(self.window._speed()["limit_rate"], "50K")
-        self.assertEqual(self.window._speed()["media_kinds"], {"video", "music", "image"})
+        self.assertEqual(self.window._speed()["media_kinds"], {"video"})
 
     def test_job_worker_accepts_media_kinds_and_source_folders(self):
         folders = {"https://www.facebook.com/reel/1": "Hello caption"}
@@ -1325,6 +1366,7 @@ class GuiSmoke(unittest.TestCase):
         info = {
             "current": "0.2.1",
             "latest": "0.2.2",
+            "tag": "v0.2.2",
             "asset_name": "CamDot-v0.2.2-Windows-x86_64-Setup.exe",
             "download_url": "https://example.com/setup.exe",
             "page_url": "https://github.com/VOK-KH/CamDot/releases",
@@ -1334,20 +1376,52 @@ class GuiSmoke(unittest.TestCase):
             with patch.object(window_module.QDesktopServices, "openUrl") as open_url:
                 self.window._prompt_app_update(info)
         open_url.assert_not_called()
+        self.assertTrue(self.window._settings.value("update_remind_after"))
 
-    def test_app_update_prompt_opens_download_when_confirmed(self):
+    def test_app_update_prompt_opens_github_when_not_installed(self):
         info = {
             "current": "0.2.1",
             "latest": "0.2.2",
+            "tag": "v0.2.2",
             "asset_name": "CamDot-v0.2.2-Windows-x86_64-Setup.exe",
+            "download_url": "https://example.com/setup.exe",
+            "page_url": "https://github.com/VOK-KH/CamDot/releases",
+            "notes": "Fix tray",
+        }
+        with patch("app.core.app_updater.is_installed_build", return_value=False):
+            with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes):
+                with patch.object(window_module.QDesktopServices, "openUrl") as open_url:
+                    self.window._prompt_app_update(info)
+        open_url.assert_called_once()
+
+    def test_app_update_prompt_downloads_when_installed(self):
+        info = {
+            "current": "0.2.1",
+            "latest": "0.2.2",
+            "tag": "v0.2.2",
             "download_url": "https://example.com/setup.exe",
             "page_url": "https://github.com/VOK-KH/CamDot/releases",
             "notes": "",
         }
-        with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes):
-            with patch.object(window_module.QDesktopServices, "openUrl") as open_url:
-                self.window._prompt_app_update(info)
-        open_url.assert_called_once()
+        with patch("app.core.app_updater.is_installed_build", return_value=True):
+            with patch("app.gui.window.threading.Thread") as thread_cls:
+                thread_cls.return_value.start = lambda: None
+                with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes):
+                    self.window._prompt_app_update(info)
+        self.assertIn("Downloading", self.window.log.toPlainText())
+
+    def test_restart_prompt_quits_after_installer(self):
+        info = {"tag": "v0.2.2", "latest": "0.2.2"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "setup.exe")
+            with open(path, "wb") as handle:
+                handle.write(b"x")
+            with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes):
+                with patch("app.core.app_updater.launch_installer", return_value=True) as launch:
+                    with patch.object(self.window, "_quit_application") as quit_app:
+                        self.window._prompt_restart_for_update(path, info)
+        launch.assert_called_once_with(path)
+        quit_app.assert_called_once()
 
     def test_run_app_update_check_emits_prompt_for_newer_release(self):
         info = {

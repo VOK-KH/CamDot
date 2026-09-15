@@ -18,7 +18,6 @@ ACTIVE_IDS = (
     "douyin",
     "kuaishou",
     "pinterest",
-    "generic",
     "threads",
     "reddit",
     "snapchat",
@@ -26,7 +25,7 @@ ACTIVE_IDS = (
     "weibo",
     "twitch",
 )
-COMING_SOON_IDS = ()
+COMING_SOON_IDS = ("generic",)
 
 
 class PlatformCatalog(unittest.TestCase):

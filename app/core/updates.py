@@ -1,5 +1,6 @@
 """Check GitHub releases for newer CamDot builds."""
 import json
+import os
 import platform
 import re
 import sys
@@ -10,6 +11,7 @@ import urllib.request
 from app import __version__
 from app.core.runtime import APP_NAME, APP_SLUG, GITHUB_REPO
 
+GITHUB_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 _API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 _VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
@@ -44,15 +46,53 @@ def is_newer(latest, current):
 
 
 def _request_json(url, timeout=15):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": APP_SLUG,
-        },
-    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": APP_SLUG,
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    headers["Cache-Control"] = "no-cache"
+    headers["Pragma"] = "no-cache"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
+
+
+def asset_label(name):
+    """Human platform label from a CamDot release asset filename."""
+    lower = (name or "").lower()
+    bits = []
+    if "windows" in lower:
+        bits.append("Windows")
+    elif "macos" in lower or "darwin" in lower:
+        bits.append("macOS")
+    elif "linux" in lower:
+        bits.append("Linux")
+    if "arm64" in lower or "aarch64" in lower:
+        bits.append("arm64")
+    elif "x86_64" in lower or "amd64" in lower:
+        bits.append("x86_64")
+    if "setup" in lower or "installer" in lower:
+        bits.append("Setup")
+    elif lower.endswith(".dmg"):
+        bits.append("DMG")
+    elif ".tar" in lower:
+        bits.append("tarball")
+    elif lower.endswith(".exe"):
+        bits.append("portable")
+    return " ".join(bits) or (name or "Download")
+
+
+def listed_assets(release):
+    rows = []
+    for asset in release.get("assets") or []:
+        name = asset.get("name") or ""
+        url = asset.get("browser_download_url") or ""
+        if name and url:
+            rows.append({"name": name, "url": url, "label": asset_label(name)})
+    return rows
 
 
 def asset_for_platform(release):
@@ -69,35 +109,58 @@ def asset_for_platform(release):
     return "", ""
 
 
-def check_for_update(timeout=15):
-    """Return update info dict or None when already current / unavailable."""
-    try:
-        release = _request_json(_API, timeout=timeout)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError):
-        return None
-    tag = (release.get("tag_name") or "").lstrip("v")
-    if not tag or not is_newer(tag, __version__):
-        return None
+def parse_release(release, current=None):
+    """Normalize a GitHub release payload for UI, Telegram, and installers."""
+    tag_raw = (release.get("tag_name") or "").strip()
+    tag = tag_raw.lstrip("v")
     asset_name, download_url = asset_for_platform(release)
     return {
-        "current": __version__,
+        "current": current if current is not None else __version__,
         "latest": tag,
-        "tag": release.get("tag_name", tag),
+        "tag": tag_raw or (f"v{tag}" if tag else ""),
         "notes": (release.get("body") or "").strip(),
         "page_url": release.get("html_url") or _PAGE,
         "asset_name": asset_name,
         "download_url": download_url,
+        "assets": listed_assets(release),
     }
 
 
+def fetch_release(tag="", timeout=15):
+    """Latest published release, or a specific tag when `tag` is set."""
+    url = _API
+    if tag:
+        name = tag if str(tag).startswith("v") else f"v{tag}"
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{name}"
+    return _request_json(url, timeout=timeout)
+
+
+def check_for_update(timeout=15):
+    """Return update info dict or None when already current / unavailable."""
+    try:
+        release = fetch_release(timeout=timeout)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError):
+        return None
+    info = parse_release(release)
+    if not info["latest"] or not is_newer(info["latest"], info["current"]):
+        return None
+    return info
+
+
 def format_update_message(info):
+    tag = info.get("tag") or info.get("latest") or ""
     lines = [
         f"A newer {APP_NAME} release is available.",
-        f"Installed: {info['current']}",
-        f"Latest: {info['latest']}",
+        f"Installed: {info.get('current', '')}",
+        f"Tag: {tag}",
     ]
-    if info.get("asset_name"):
-        lines.append(f"Download: {info['asset_name']}")
+    assets = info.get("assets") or []
+    if assets:
+        lines.append("Downloads:")
+        for asset in assets:
+            lines.append(f"- {asset.get('label') or asset['name']}: {asset['url']}")
+    elif info.get("download_url"):
+        lines.append(f"Download: {info.get('asset_name') or ''} {info['download_url']}".strip())
     notes = (info.get("notes") or "").strip()
     if notes:
         lines.append("")

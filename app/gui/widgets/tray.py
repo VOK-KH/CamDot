@@ -1,7 +1,7 @@
 """System tray icon and context menu."""
 import os
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -44,6 +44,7 @@ class TrayController(QObject):
         self._workers = None
         self._limit_on = None
         self._limit_rate = None
+        self._activated_connected = False
         self._build_menu()
         self.menu.aboutToShow.connect(self.reload_controls)
         self.refresh_tooltip()
@@ -52,6 +53,7 @@ class TrayController(QObject):
         if self._can_show():
             self.icon.setContextMenu(self.menu)
             self.icon.activated.connect(self._activated)
+            self._activated_connected = True
             self.icon.show()
 
     @staticmethod
@@ -205,13 +207,15 @@ class TrayController(QObject):
 
     def show_window(self):
         window = self.window
-        if window.isMinimized():
-            window.setWindowState(
-                window.windowState() & ~Qt.WindowState.WindowMinimized
-            )
-        window.show()
+        if window.isMinimized() or window.isHidden():
+            window.showNormal()
+        else:
+            window.show()
         window.raise_()
         window.activateWindow()
+        window.setWindowState(
+            window.windowState() & ~Qt.WindowState.WindowMinimized
+        )
 
     def _activated(self, reason):
         if reason in (
@@ -222,4 +226,7 @@ class TrayController(QObject):
 
     def hide_icon(self):
         self.icon.setContextMenu(None)
+        if self._activated_connected:
+            self.icon.activated.disconnect(self._activated)
+            self._activated_connected = False
         self.icon.hide()

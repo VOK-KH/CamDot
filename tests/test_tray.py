@@ -133,6 +133,19 @@ class TrayTests(unittest.TestCase):
         self.window._toggle_grabber(False)
         self.assertFalse(self.window.tray.act_clipboard.isChecked())
 
+    def test_show_window_restores_a_hidden_window(self):
+        self.window.hide()
+        self.window.tray.show_window()
+        self.assertFalse(self.window.isHidden())
+
+    def test_tray_trigger_and_double_click_reuse_the_same_window(self):
+        self.window.hide()
+        tray = self.window.tray
+        tray._activated(QSystemTrayIcon.ActivationReason.Trigger)
+        tray._activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+        self.assertFalse(self.window.isHidden())
+        self.assertIs(tray.window, self.window)
+
     def test_settings_checkbox_persists_close_to_tray(self):
         dialog = SettingsDialog(self.window._settings, self.window)
         self.assertTrue(dialog.close_to_tray.isChecked())

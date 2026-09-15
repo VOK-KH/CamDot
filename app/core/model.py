@@ -680,7 +680,7 @@ class ReelFilterProxy(QSortFilterProxyModel):
         reel = model.reel_at(row)
         if self._status and reel.status != self._status:
             return False
-        if self._kinds and media_kind(reel) not in self._kinds:
+        if media_kind(reel) not in self._kinds:
             return False
         if self._hosts is not None and host_label(reel) not in self._hosts:
             return False

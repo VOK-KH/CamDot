@@ -174,11 +174,9 @@ def reporting_enabled():
     if enabled in ("1", "true", "yes", "on"):
         return True
     try:
-        from PySide6.QtCore import QSettings
+        from app.core.runtime import gui_settings
 
-        from app.core.runtime import SETTINGS_ORG
-
-        settings = QSettings(SETTINGS_ORG, "gui")
+        settings = gui_settings()
         return settings.value("telegram_reports", True, bool)
     except Exception:
         return True
@@ -267,15 +265,71 @@ def report_tools_use(*, device_id="", source="auto", ok=True, versions=None):
     )
 
 
-def report_app_update(info, *, device_id=""):
-    latest = info.get("latest") or info.get("tag") or "unknown"
-    body = (
-        f"Current: {__version__}\n"
-        f"Latest: {latest}\n"
-        f"Asset: {info.get('asset_name') or '-'}\n"
-        f"URL: {info.get('download_url') or info.get('page_url') or '-'}"
-    )
-    send_report(EVENT_APP_UPDATE, "New app version available", body, device_id=device_id)
+def format_github_release_notice(info):
+    """HTML Telegram body for a published GitHub release (tag, links, notes)."""
+    tag = html.escape(info.get("tag") or info.get("latest") or "")
+    lines = [
+        f"⬆️ <b>{html.escape(APP_NAME)} {tag}</b>",
+        f"🏷️ <b>Tag:</b> <code>{tag}</code>",
+    ]
+    assets = info.get("assets") or []
+    if assets:
+        lines.append("")
+        lines.append("💻 <b>Platform downloads</b>")
+        for asset in assets:
+            label = html.escape(asset.get("label") or asset.get("name") or "Download")
+            name = html.escape(asset.get("name") or label)
+            href = html.escape(asset.get("url") or "", quote=True)
+            lines.append(f"• {label}: <a href=\"{href}\">{name}</a>")
+    page = info.get("page_url") or ""
+    if page:
+        lines.append("")
+        lines.append(
+            f"🔗 <a href=\"{html.escape(page, quote=True)}\">GitHub release page</a>"
+        )
+    notes = (info.get("notes") or "").strip()
+    if notes:
+        clipped = notes[:2500]
+        lines.append("")
+        lines.append("📝 <b>Patch notes</b>")
+        lines.append(f"<pre>{html.escape(clipped)}</pre>")
+    text = "\n".join(lines)
+    if len(text) > _MAX_TEXT:
+        text = text[: _MAX_TEXT - 20] + "\n… (truncated)"
+    return text
+
+
+def send_html(text, *, block=True):
+    """Post a preformatted HTML Telegram message. Skips privacy wrapping."""
+    token, chat_id = _credentials()
+    if not token or not chat_id:
+        return False
+
+    def _send():
+        with _send_lock:
+            try:
+                _post_message(token, chat_id, text)
+            except (urllib.error.URLError, OSError, TimeoutError):
+                pass
+
+    if block:
+        _send()
+        return True
+    threading.Thread(target=_send, name="telegram-release", daemon=True).start()
+    return True
+
+
+def notify_github_release(info=None, *, tag="", block=True):
+    """Announce a GitHub release. Only the Release workflow should call this."""
+    flag = os.environ.get("CAMDOT_TELEGRAM_RELEASE_NOTICE", "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return False
+    if info is None:
+        from app.core.updates import fetch_release, parse_release
+
+        info = parse_release(fetch_release(tag=tag), current="")
+    text = format_github_release_notice(info)
+    return send_html(text, block=block)
 
 
 def report_job_error(exc, *, device_id="", mode="", channel=""):

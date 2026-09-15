@@ -55,7 +55,7 @@ def extract_supported_urls(text):
     seen = set()
     for match in URL_IN_TEXT_RE.findall(text or ""):
         candidate = match.rstrip(".,;:!?)]}")
-        if detect_platform(candidate) == "unknown":
+        if not is_supported_source(candidate):
             continue
         try:
             candidate = normalize_source_url(candidate)
@@ -183,6 +183,15 @@ def detect_platform(url):
     if "." in host:
         return "generic"
     return "unknown"
+
+
+def is_supported_source(url):
+    """True when CamDot should extract or download this URL.
+
+    Named hosts (Facebook, YouTube, …) are processed. Random HTTPS hosts
+    (`generic`) and non-URLs (`unknown`) are not queued.
+    """
+    return detect_platform(url) not in ("unknown", "generic")
 
 
 def _classify_facebook(parts):
@@ -505,7 +514,7 @@ def normalize_source_url(url):
         url = f"https://www.facebook.com/profile.php?id={raw}"
     url = _with_scheme(url)
     platform = detect_platform(url)
-    if platform == "unknown":
+    if platform in ("unknown", "generic"):
         raise ValueError(
             "Unsupported site. Paste a video, reel, board, or page URL."
         )

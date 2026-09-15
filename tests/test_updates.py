@@ -51,7 +51,41 @@ class UpdateChecks(unittest.TestCase):
                     with patch.object(updates, "arch_label", return_value="x86_64"):
                         info = updates.check_for_update()
         self.assertEqual(info["latest"], "0.3.0")
+        self.assertEqual(info["tag"], "v0.3.0")
         self.assertEqual(info["download_url"], "https://example.com/win.exe")
+        self.assertEqual(len(info["assets"]), 1)
+
+    def test_asset_label_and_listed_assets(self):
+        self.assertEqual(
+            updates.asset_label("CamDot-v0.3.0-Windows-x86_64-Setup.exe"),
+            "Windows x86_64 Setup",
+        )
+        self.assertEqual(
+            updates.asset_label("CamDot-v0.3.0-Windows-x86_64.exe"),
+            "Windows x86_64 portable",
+        )
+        release = {
+            "tag_name": "v0.4.0",
+            "html_url": "https://github.com/VOK-KH/CamDot/releases/tag/v0.4.0",
+            "body": "- Fix tray\n- Skip unknown hosts",
+            "assets": [
+                {
+                    "name": "CamDot-v0.4.0-Windows-x86_64-Setup.exe",
+                    "browser_download_url": "https://example.com/setup.exe",
+                },
+                {
+                    "name": "CamDot-v0.4.0-Linux-x86_64.tar.gz",
+                    "browser_download_url": "https://example.com/linux.tgz",
+                },
+            ],
+        }
+        with patch.object(updates, "platform_label", return_value="Windows"):
+            with patch.object(updates, "arch_label", return_value="x86_64"):
+                info = updates.parse_release(release, current="0.3.0")
+        self.assertEqual(info["tag"], "v0.4.0")
+        self.assertEqual(info["notes"], "- Fix tray\n- Skip unknown hosts")
+        labels = [row["label"] for row in info["assets"]]
+        self.assertEqual(labels, ["Windows x86_64 Setup", "Linux x86_64 tarball"])
 
     def test_format_update_prompt(self):
         text = updates.format_update_prompt(

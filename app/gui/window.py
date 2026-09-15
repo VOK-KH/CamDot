@@ -85,6 +85,7 @@ from app.gui.widgets.loader import ExtractLoader
 from app.gui.widgets.views import ViewsPanel
 from app.gui.dialogs.settings import SettingsDialog
 from app.gui.helpers import derive_channel, remember_recent
+from app.gui.instance import InstanceGuard
 from app.gui.jobs import JobWorker
 from app.gui.widgets.header import CheckHeaderView
 from app.gui.widgets.overview import OverviewPanel
@@ -109,8 +110,8 @@ from app import __version__
 from app.core.fonts import setup_app_font
 from app.core.runtime import (
     APP_NAME,
-    SETTINGS_ORG,
     collect_csv_path,
+    gui_settings,
     resolve_output_root,
     runtime_versions,
     schedule_auto_update,
@@ -119,6 +120,7 @@ from app.core.runtime import (
     update_runtime,
 )
 from app.core.updates import (
+    GITHUB_CHECK_INTERVAL_MS,
     check_for_update,
     format_update_message,
     format_update_prompt,
@@ -138,6 +140,7 @@ class MainWindow(QMainWindow):
     gpu_detected = Signal(str, str)
     app_update_found = Signal(object)
     app_update_uptodate = Signal()
+    app_update_downloaded = Signal(str, object)
     open_url = Signal(str)
 
     def __init__(self, dark=theme.DEFAULT_DARK, settings=None):
@@ -147,6 +150,7 @@ class MainWindow(QMainWindow):
         self.gpu_detected.connect(self._on_gpu_detected)
         self.app_update_found.connect(self._prompt_app_update)
         self.app_update_uptodate.connect(self._show_app_uptodate)
+        self.app_update_downloaded.connect(self._prompt_restart_for_update)
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 680)
         # No native title bar: the menu strip carries the window controls, and
@@ -167,7 +171,7 @@ class MainWindow(QMainWindow):
         self._grab_aborted = False
         self._grab_manual = False
         self._dark = dark
-        self._settings = settings or QSettings(SETTINGS_ORG, "gui")
+        self._settings = settings or gui_settings()
         self._columns_locked = self._settings.value("columns_locked", False, bool)
         self._h_scrollbar = False
         self.grab_add_at_top = False
@@ -221,6 +225,9 @@ class MainWindow(QMainWindow):
         self._stats_timer = QTimer(self)
         self._stats_timer.setInterval(STATS_INTERVAL_MS)
         self._stats_timer.timeout.connect(self._refresh_stats)
+        self._app_update_timer = QTimer(self)
+        self._app_update_timer.setInterval(GITHUB_CHECK_INTERVAL_MS)
+        self._app_update_timer.timeout.connect(self._poll_github_app_update)
         self._restore_settings()
         try:
             sweep_download_folder(self._output_root())
@@ -230,6 +237,7 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self._update_counter()
         self._start_stats()
+        self._sync_app_update_timer()
         if self.source_edit.text().strip():
             self._load_saved_list(self._channel())
         self.grab_panel = GrabberPanel(self)
@@ -261,6 +269,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_grabber_page(), "Grabber")
         self.tabs.currentChanged.connect(self._on_page_changed)
         self.views = ViewsPanel(self)
+        self.views.filter_changed.connect(self._persist_views_kinds)
         self.views.filter_changed.connect(self._apply_views_filter)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setObjectName("workSplit")
@@ -881,6 +890,12 @@ class MainWindow(QMainWindow):
         if self.save_path_edit.text() != current:
             self.save_path_edit.setText(current)
 
+    def _persist_views_kinds(self):
+        panel = getattr(self, "views", None)
+        if panel is None:
+            return
+        self._settings.setValue("views_kinds", ",".join(sorted(panel.checked_kinds())))
+
     def _apply_views_filter(self):
         panel = getattr(self, "views", None)
         if panel is None:
@@ -1373,12 +1388,33 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._run_tool_update, daemon=True).start()
 
     def _check_app_updates(self):
-        self._append_log(f"Checking for {APP_NAME} updates…")
+        self._append_log(f"Checking GitHub for {APP_NAME} updates…")
         threading.Thread(
             target=self._run_app_update_check,
             kwargs={"prompt_update": True, "notify_uptodate": True},
             daemon=True,
+            name="github-update-check",
         ).start()
+
+    def _poll_github_app_update(self):
+        if not self._settings.value("check_app_updates", True, bool):
+            return
+        threading.Thread(
+            target=self._run_app_update_check,
+            kwargs={"prompt_update": True, "notify_uptodate": False},
+            daemon=True,
+            name="github-update-poll",
+        ).start()
+
+    def _sync_app_update_timer(self):
+        timer = getattr(self, "_app_update_timer", None)
+        if timer is None:
+            return
+        if self._settings.value("check_app_updates", True, bool):
+            if not timer.isActive():
+                timer.start()
+        else:
+            timer.stop()
 
     def _run_app_update_check(self, *, prompt_update=False, notify_uptodate=False):
         info = check_for_update()
@@ -1386,12 +1422,6 @@ class MainWindow(QMainWindow):
             if notify_uptodate:
                 self.app_update_uptodate.emit()
             return
-        try:
-            from app.core.telegram_report import report_app_update
-
-            report_app_update(info, device_id=self._device_id())
-        except Exception:
-            pass
         self.tools_checked.emit(format_update_message(info))
         if prompt_update and should_offer_update(info, self._settings):
             self.app_update_found.emit(info)
@@ -1407,42 +1437,84 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _prompt_app_update(self, info):
-        box = QMessageBox(self)
-        box.setWindowTitle("Update available")
-        box.setText(f"{format_update_prompt(info)}\n\nInstall the update now?")
-        update_btn = box.addButton("Update now", QMessageBox.ButtonRole.AcceptRole)
-        later_btn = box.addButton("Remind later", QMessageBox.ButtonRole.ActionRole)
-        skip_btn = box.addButton("Skip this version", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(update_btn)
-        box.exec()
-        clicked = box.clickedButton()
+        from app.core.app_updater import is_installed_build
+
+        tag = info.get("tag") or info.get("latest") or ""
+        can_install = is_installed_build() and bool(info.get("download_url"))
+        extra = (
+            "\n\nDownload this version, then close CamDot and install? "
+            "The app will reopen after setup."
+            if can_install
+            else "\n\nOpen the GitHub release page to download it?"
+        )
+        clicked = alert(
+            self,
+            "question",
+            "Update available",
+            f"{format_update_prompt(info)}{extra}",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Ignore,
+            QMessageBox.StandardButton.Yes,
+        )
         latest = info.get("latest", "")
-        if clicked == update_btn:
-            self._append_log("Downloading update…")
-            threading.Thread(target=self._apply_app_update, args=(info,), daemon=True).start()
-        elif clicked == later_btn:
-            self._settings.setValue("update_remind_after", time.time() + 3 * 86400)
-            self._settings.sync()
-            self._append_log("Update reminder snoozed for 3 days.")
-        elif clicked == skip_btn:
+        if clicked == QMessageBox.StandardButton.Yes:
+            if can_install:
+                self._append_log(f"Downloading {tag} from GitHub…")
+                threading.Thread(
+                    target=self._download_app_update,
+                    args=(info,),
+                    daemon=True,
+                    name="github-update-download",
+                ).start()
+            else:
+                url = info.get("page_url") or info.get("download_url")
+                if url:
+                    QDesktopServices.openUrl(QUrl(url))
+        elif clicked == QMessageBox.StandardButton.Ignore:
             self._settings.setValue("skipped_update_version", latest)
             self._settings.sync()
             self._append_log(f"Skipped update {latest}.")
         else:
-            self._append_log("Update postponed.")
+            self._settings.setValue("update_remind_after", time.time() + 3 * 86400)
+            self._settings.sync()
+            self._append_log("Update reminder snoozed for 3 days.")
 
-    def _apply_app_update(self, info):
+    def _download_app_update(self, info):
         try:
-            from app.core.app_updater import apply_update
+            from app.core.app_updater import download_update
 
-            path = apply_update(info)
-            self.tools_checked.emit(f"Installing {os.path.basename(path)}…")
+            path = download_update(info)
+            self.app_update_downloaded.emit(path, info)
         except Exception as exc:
-            self.tools_checked.emit(f"Update failed: {exc}")
+            self.tools_checked.emit(f"Update download failed: {exc}")
             url = info.get("download_url") or info.get("page_url")
             if url:
                 self.open_url.emit(url)
+
+    @Slot(str, object)
+    def _prompt_restart_for_update(self, path, info):
+        from app.core.app_updater import launch_installer
+
+        tag = info.get("tag") or info.get("latest") or ""
+        clicked = alert(
+            self,
+            "question",
+            "Restart to finish update",
+            f"{APP_NAME} {tag} is downloaded.\n\n"
+            "Close CamDot now and install the new version? "
+            "Setup will reopen the app when it finishes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if clicked != QMessageBox.StandardButton.Yes:
+            self._append_log(f"Installer saved to {path}")
+            return
+        if not launch_installer(path):
+            self._append_log(f"Could not start installer: {path}")
+            return
+        self._append_log(f"Installing {os.path.basename(path)}…")
+        self._quit_application()
 
     def _export_list(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1686,18 +1758,16 @@ class MainWindow(QMainWindow):
                 links.extend(found)
             else:
                 unusable += 1
-        if len(lines) == 1 and len(links) < 2:
-            # One line keeps the old path: Extract repairs the URL, asks the
-            # playlist question, and reports why an unusable link was refused.
-            self.source_edit.setText(links[0] if links else lines[0])
+        if len(lines) == 1 and len(links) == 1:
+            # One supported link: Extract repairs the URL and asks playlist questions.
+            self.source_edit.setText(links[0])
             self._start_collect()
             return
         if not links:
             alert(
                 self, "warning", "Nothing to add",
                 "No supported link found. Paste one link per line from Facebook, "
-                "Instagram, TikTok, YouTube, X, Bilibili, Douyin, Kuaishou, Pinterest, "
-                "or any other video URL.",
+                "Instagram, TikTok, YouTube, X, Bilibili, Douyin, Kuaishou, or Pinterest.",
             )
             return
         self._add_links_in_background(links, unusable)
@@ -2180,7 +2250,6 @@ class MainWindow(QMainWindow):
                 added.append(url)
         self._grab_dupes += len(urls) - len(added)
         if not added:
-            self._show_grab_panel("Analyzing…")
             return 0
         self._grab_queue.extend(added)
         self._append_log(f"Link Grabber queued {len(added)} link(s).")
@@ -2238,6 +2307,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self._settings, self)
         if dialog.exec():
             self._restore_tool_settings()
+            self._sync_app_update_timer()
             self._sync_save_path_edit()
             self._apply_theme()
             self._sync_menu_state()
@@ -2654,6 +2724,16 @@ class MainWindow(QMainWindow):
         self.grab_auto_confirm = get("grab_auto_confirm", False, bool)
         self.grab_autostart = get("grab_autostart", False, bool)
         self.act_grabber.setChecked(get("link_grabber", True, bool))
+        if hasattr(self, "views"):
+            raw = get("views_kinds")
+            if raw is None:
+                keys = ["video"]
+            elif isinstance(raw, (list, tuple)):
+                keys = [str(item).strip() for item in raw if str(item).strip()]
+            else:
+                keys = [part.strip() for part in str(raw).split(",") if part.strip()]
+            self.views.set_checked_kinds(keys, emit=False)
+            self._apply_views_filter()
         geometry = get("geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -2699,6 +2779,8 @@ class MainWindow(QMainWindow):
         put("grab_auto_confirm", self.grab_auto_confirm)
         put("grab_autostart", self.grab_autostart)
         put("link_grabber", self.act_grabber.isChecked())
+        if hasattr(self, "views"):
+            put("views_kinds", ",".join(sorted(self.views.checked_kinds())))
         put("geometry", self.saveGeometry())
         if hasattr(self, "work_split"):
             put("work_split", self.work_split.saveState())
@@ -2752,6 +2834,8 @@ class MainWindow(QMainWindow):
         if getattr(self, "grab_panel", None):
             self.grab_panel.hide()
         self._stats_timer.stop()
+        if getattr(self, "_app_update_timer", None):
+            self._app_update_timer.stop()
         self._flush_store()
         self._save_settings()
         if getattr(self, "tray", None):
@@ -2778,7 +2862,11 @@ def run_gui(argv=None):
     setup_app_font(app)
     app.setStyle("Fusion")
     app.setStyleSheet(theme.stylesheet(theme.DEFAULT_DARK))
-    settings = QSettings(SETTINGS_ORG, "gui")
+    guard = InstanceGuard(app)
+    if not guard.acquire():
+        guard.ping_existing()
+        return 0
+    settings = gui_settings()
     from app.core.telegram_report import (
         device_id_from_settings,
         install_crash_handlers,
@@ -2791,6 +2879,7 @@ def run_gui(argv=None):
         app.setQuitOnLastWindowClosed(False)
     schedule_auto_update(settings.value("auto_update", True, bool))
     window = MainWindow(settings=settings)
+    guard.activate.connect(window.tray.show_window)
     window.show()
     threading.Thread(
         target=report_launch, args=(settings, device_id), daemon=True, name="telegram-launch"
@@ -2801,7 +2890,12 @@ def run_gui(argv=None):
             kwargs={"prompt_update": True, "notify_uptodate": False},
             daemon=True,
         ).start()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        guard.release()
+        if getattr(window, "tray", None):
+            window.tray.hide_icon()
 
 
 def main():

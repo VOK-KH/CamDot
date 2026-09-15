@@ -74,7 +74,7 @@ class ViewsPanel(QFrame):
             box.setObjectName("viewsKind")
             box.setProperty("iconName", KIND_ICONS[key])
             box.setIconSize(KIND_ICON_SIZE)
-            box.setChecked(True)
+            box.setChecked(key == "video")
             box.toggled.connect(lambda _checked=False: self.filter_changed.emit())
             self._kind_boxes[key] = box
             column.addWidget(box)
@@ -107,6 +107,16 @@ class ViewsPanel(QFrame):
 
     def checked_kinds(self):
         return {key for key, box in self._kind_boxes.items() if box.isChecked()}
+
+    def set_checked_kinds(self, kinds, emit=True):
+        """Check Video / Music / Image. Default is video only."""
+        wanted = set(kinds) if kinds is not None else {"video"}
+        for key, box in self._kind_boxes.items():
+            box.blockSignals(True)
+            box.setChecked(key in wanted)
+            box.blockSignals(False)
+        if emit:
+            self.filter_changed.emit()
 
     def checked_hosts(self):
         """None means every listed host is included (no extra host filter)."""

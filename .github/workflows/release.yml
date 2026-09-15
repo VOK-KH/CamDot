@@ -59,6 +59,25 @@ jobs:
             dist/CamDot-v${{ env.VERSION }}-Windows-x86_64-Setup.exe
             dist/CamDot-v${{ env.VERSION }}-Windows-x86_64.exe
 
+  notify-telegram:
+    needs: [build-windows]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Telegram release notice
+        env:
+          CAMDOT_TELEGRAM_BOT_TOKEN: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN }}
+          CAMDOT_TELEGRAM_CHAT_ID: ${{ secrets.CAMDOT_TELEGRAM_CHAT_ID }}
+          CAMDOT_TELEGRAM_REPORTS: "1"
+          CAMDOT_TELEGRAM_RELEASE_NOTICE: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run python tools/notify_release.py
+
   # macOS and Linux packaging will be enabled in a later release.
   build-macos-arm:
     if: false
