@@ -7,7 +7,7 @@ Layout (jobs a CTO-style agent can own independently):
     app/gui/jobs.py       background collect/download worker
     app/gui/window.py     MainWindow and run_gui
     app/gui/dialogs/      alerts and settings
-    app/gui/widgets/      table header, progress bar, Overview, Grabber monitor
+    app/gui/widgets/      table header, progress bar, Overview, Grabber, tray
 
 Download logic lives in app/core/.
 """

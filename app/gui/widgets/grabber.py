@@ -68,8 +68,8 @@ class GrabberPanel(QFrame):
         head = QWidget()
         head.setObjectName("grabberHead")
         row = QHBoxLayout(head)
-        row.setContentsMargins(8, 3, 4, 3)
-        row.setSpacing(6)
+        row.setContentsMargins(6, 2, 3, 2)
+        row.setSpacing(4)
         title = QLabel("Parse Clipboard")
         title.setObjectName("grabberTitle")
         self.pin_btn = self._head_button("pinned", "Keep this panel open", checkable=True)
@@ -86,15 +86,15 @@ class GrabberPanel(QFrame):
     def _build_body(self):
         body = QWidget()
         grid = QGridLayout(body)
-        grid.setContentsMargins(10, 8, 10, 8)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(3)
+        grid.setContentsMargins(6, 4, 6, 4)
+        grid.setHorizontalSpacing(4)
+        grid.setVerticalSpacing(1)
 
         art = QLabel()
-        art.setPixmap(icons.png("clipboard", 32))
+        art.setPixmap(icons.png("clipboard", 24))
         art.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         grid.addWidget(art, 0, 0, len(self.FIELDS), 1)
-        grid.setColumnMinimumWidth(0, 44)
+        grid.setColumnMinimumWidth(0, 32)
 
         for row, (name, artwork) in enumerate(self.FIELDS):
             label = QLabel(f"{name}:")

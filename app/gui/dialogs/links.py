@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
 PLACEHOLDER = (
     "https://www.facebook.com/reel/123456789\n"
     "https://www.instagram.com/reel/AbCdEfGh\n"
-    "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ\n"
+    "https://www.bilibili.tv/en/video/4794551511289856\n"
+    "https://www.douyin.com/jingxuan?modal_id=7683008214744581018"
 )
 
 

@@ -27,13 +27,15 @@ class ClipboardUrls(unittest.TestCase):
         text = (
             "watch https://www.tiktok.com/@demo/video/123, then "
             "https://youtu.be/abc123. Duplicate: https://youtu.be/abc123 "
-            "and ignore https://example.com/nope"
+            "and ignore ftp://example.com/nope "
+            "https://www.bilibili.tv/en/video/4794551511289856?bstar_from=bstar-web.homepage.recommend.all"
         )
         self.assertEqual(
             extract_supported_urls(text),
             [
                 "https://www.tiktok.com/@demo/video/123",
                 "https://youtu.be/abc123",
+                "https://www.bilibili.tv/en/video/4794551511289856",
             ],
         )
 
@@ -194,13 +196,22 @@ class DetectPlatform(unittest.TestCase):
             "https://youtu.be/dQw4w9wgGcQ": "youtube",
             "https://x.com/name/status/1": "twitter",
             "https://twitter.com/name/status/1": "twitter",
+            "https://www.bilibili.tv/en/video/4794551511289856": "bilibili",
+            "https://www.bilibili.com/video/BV1xx411c7mD": "bilibili",
+            "https://b23.tv/abc123": "bilibili",
+            "https://www.douyin.com/jingxuan?modal_id=7683008214744581018": "douyin",
+            "https://www.douyin.com/video/7683008214744581018": "douyin",
+            "https://v.douyin.com/abc123": "douyin",
+            "https://www.kuaishou.com/short-video/1": "kuaishou",
+            "https://www.pinterest.com/pin/123": "pinterest",
+            "https://www.dramabox.com/watch/abc": "generic",
         }
         for url, platform in cases.items():
             with self.subTest(url=url):
                 self.assertEqual(detect_platform(url), platform)
 
     def test_unknown_host(self):
-        self.assertEqual(detect_platform("https://example.com/v/1"), "unknown")
+        self.assertEqual(detect_platform("not a url"), "unknown")
 
 
 class ClassifySource(unittest.TestCase):
@@ -214,11 +225,23 @@ class ClassifySource(unittest.TestCase):
             classify_source("https://www.facebook.com/profile.php?id=1&sk=reels_tab"),
             FACEBOOK_REELS_FEED,
         )
+        self.assertEqual(classify_source("https://www.facebook.com/groups/123/photos"), FEED)
+        self.assertEqual(classify_source("https://www.facebook.com/photo.php?fbid=1"), SINGLE)
 
     def test_instagram(self):
         self.assertEqual(classify_source("https://www.instagram.com/p/AbC/"), SINGLE)
         self.assertEqual(classify_source("https://www.instagram.com/reel/AbC/"), SINGLE)
-        self.assertEqual(classify_source("https://www.instagram.com/someone/"), UNSUPPORTED_FEED)
+        self.assertEqual(classify_source("https://www.instagram.com/tv/AbC/"), SINGLE)
+        self.assertEqual(classify_source("https://www.instagram.com/stories/someone/1"), SINGLE)
+        self.assertEqual(classify_source("https://www.instagram.com/someone/reel/AbC/"), SINGLE)
+        self.assertEqual(classify_source("https://www.instagram.com/someone/"), FEED)
+        self.assertEqual(
+            classify_source("https://www.instagram.com/2002chii_/reels/?hl=en"), FEED
+        )
+        self.assertEqual(
+            classify_source("https://www.instagram.com/2002chii_/reposts/?hl=en"), FEED
+        )
+        self.assertEqual(classify_source("https://www.instagram.com/someone/tagged/"), FEED)
 
     def test_tiktok(self):
         self.assertEqual(classify_source("https://www.tiktok.com/@user/video/1"), SINGLE)
@@ -235,7 +258,36 @@ class ClassifySource(unittest.TestCase):
 
     def test_twitter(self):
         self.assertEqual(classify_source("https://x.com/name/status/123"), SINGLE)
-        self.assertEqual(classify_source("https://x.com/name"), UNSUPPORTED_FEED)
+        self.assertEqual(classify_source("https://x.com/name"), FEED)
+
+    def test_bilibili(self):
+        self.assertEqual(
+            classify_source(
+                "https://www.bilibili.tv/en/video/4794551511289856?bstar_from=home"
+            ),
+            SINGLE,
+        )
+        self.assertEqual(classify_source("https://www.bilibili.com/video/BV1xx411c7mD"), SINGLE)
+        self.assertEqual(classify_source("https://space.bilibili.com/123"), FEED)
+
+    def test_douyin(self):
+        self.assertEqual(
+            classify_source("https://www.douyin.com/jingxuan?modal_id=7683008214744581018"),
+            SINGLE,
+        )
+        self.assertEqual(classify_source("https://www.douyin.com/video/7683008214744581018"), SINGLE)
+        self.assertEqual(classify_source("https://www.douyin.com/user/MS4wLjAB"), FEED)
+        self.assertEqual(classify_source("https://www.douyin.com/jingxuan"), UNSUPPORTED_FEED)
+
+    def test_kuaishou_and_pinterest(self):
+        self.assertEqual(classify_source("https://www.kuaishou.com/short-video/1"), SINGLE)
+        self.assertEqual(classify_source("https://www.kuaishou.com/profile/1"), FEED)
+        self.assertEqual(classify_source("https://www.pinterest.com/pin/123"), SINGLE)
+        self.assertEqual(classify_source("https://pin.it/abc"), SINGLE)
+        self.assertEqual(classify_source("https://www.pinterest.com/user/board"), FEED)
+        self.assertEqual(classify_source("https://www.pinterest.com/mocute4u/"), FEED)
+        self.assertEqual(classify_source("https://www.pinterest.com/ideas/"), SINGLE)
+        self.assertEqual(classify_source("https://www.pinterest.com/search/pins/"), SINGLE)
 
 
 class NormalizeSourceUrl(unittest.TestCase):
@@ -255,18 +307,82 @@ class NormalizeSourceUrl(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=dQw4w9wgGcQ"
         self.assertEqual(normalize_source_url(url), url)
 
-    def test_instagram_profile_is_rejected(self):
-        with self.assertRaises(ValueError) as caught:
-            normalize_source_url("https://www.instagram.com/someone/")
-        self.assertIn("profile", str(caught.exception).lower())
+    def test_instagram_profile_is_a_feed(self):
+        self.assertEqual(
+            normalize_source_url("https://www.instagram.com/someone/"),
+            "https://www.instagram.com/someone/",
+        )
 
-    def test_x_timeline_is_rejected(self):
-        with self.assertRaises(ValueError):
-            normalize_source_url("https://x.com/name")
+    def test_instagram_tabs_keep_path_and_drop_tracking(self):
+        self.assertEqual(
+            normalize_source_url("https://www.instagram.com/2002chii_/?hl=en"),
+            "https://www.instagram.com/2002chii_/",
+        )
+        self.assertEqual(
+            normalize_source_url("https://www.instagram.com/2002chii_/reels/?hl=en"),
+            "https://www.instagram.com/2002chii_/reels/",
+        )
+        self.assertEqual(
+            normalize_source_url("https://www.instagram.com/2002chii_/reposts/?hl=en"),
+            "https://www.instagram.com/2002chii_/reposts/",
+        )
 
-    def test_unknown_site_is_rejected(self):
-        with self.assertRaises(ValueError):
-            normalize_source_url("https://vimeo.com/123")
+    def test_x_timeline_is_a_feed(self):
+        self.assertEqual(normalize_source_url("https://x.com/name"), "https://x.com/name")
+
+    def test_generic_https_is_kept(self):
+        self.assertEqual(
+            normalize_source_url("https://www.dramabox.com/watch/abc"),
+            "https://www.dramabox.com/watch/abc",
+        )
+
+    def test_facebook_page_id_becomes_a_profile_url(self):
+        self.assertEqual(
+            normalize_source_url("61554746552594"),
+            "https://www.facebook.com/profile.php?id=61554746552594&sk=reels_tab",
+        )
+
+    def test_douyinuser_becomes_a_profile_url(self):
+        self.assertEqual(
+            normalize_source_url("douyinuser:MS4wLjABabc"),
+            "https://www.douyin.com/user/MS4wLjABabc",
+        )
+
+    def test_bilibili_video_drops_tracking_query(self):
+        self.assertEqual(
+            normalize_source_url(
+                "https://www.bilibili.tv/en/video/4794551511289856"
+                "?bstar_from=bstar-web.homepage.recommend.all"
+            ),
+            "https://www.bilibili.tv/en/video/4794551511289856",
+        )
+
+    def test_douyin_jingxuan_becomes_a_video_url(self):
+        self.assertEqual(
+            normalize_source_url(
+                "https://www.douyin.com/jingxuan?modal_id=7683008214744581018"
+            ),
+            "https://www.douyin.com/video/7683008214744581018",
+        )
+
+    def test_pinterest_unquotes_board_slug_and_drops_empty_query(self):
+        encoded = (
+            "https://www.pinterest.com/mocute4u/"
+            "%2B-%E1%99%98%CE%BC%E1%A5%92%E1%A5%92%EA%AD%B5%E1%A5%B1%EA%AE%AA%2B%E0%B6%A1/"
+        )
+        decoded = normalize_source_url(encoded)
+        self.assertNotIn("%2B", decoded)
+        self.assertIn("/mocute4u/", decoded)
+        self.assertIn("+", decoded)
+        self.assertEqual(classify_source(decoded), FEED)
+        self.assertEqual(
+            normalize_source_url("https://www.pinterest.com/user/board?"),
+            "https://www.pinterest.com/user/board",
+        )
+        self.assertEqual(
+            normalize_source_url("https://www.pinterest.com/pin/123456789/"),
+            "https://www.pinterest.com/pin/123456789/",
+        )
 
     def test_collection_strategy(self):
         self.assertEqual(
@@ -275,7 +391,14 @@ class NormalizeSourceUrl(unittest.TestCase):
         self.assertEqual(
             collection_strategy("https://www.youtube.com/watch?v=dQw4w9wgGcQ"), "ytdlp"
         )
-        self.assertEqual(collection_strategy("https://www.instagram.com/someone/"), "unsupported")
+        self.assertEqual(collection_strategy("https://www.instagram.com/someone/"), "selenium")
+        self.assertEqual(
+            collection_strategy("https://www.instagram.com/2002chii_/reels/"), "selenium"
+        )
+        self.assertEqual(
+            collection_strategy("https://www.instagram.com/2002chii_/reposts/"), "selenium"
+        )
+        self.assertEqual(collection_strategy("https://www.instagram.com/p/AbC/"), "ytdlp")
 
 
 if __name__ == "__main__":

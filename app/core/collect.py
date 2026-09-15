@@ -1,16 +1,23 @@
-"""Collect post URLs and metadata: Selenium for Facebook reels feeds, yt-dlp otherwise."""
+"""Collect post URLs and metadata: yt-dlp first for Facebook feeds, then Selenium."""
 import csv
 import json
 import os
 import time
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-from app.core.download import collapse_text, read_urls, reel_id
+from app.core.download import (
+    _pinterest_pin_duration,
+    collapse_text,
+    pinterest_resource,
+    read_urls,
+    reel_id,
+)
 from app.core.jobs import StopRequested, check_stop
-from app.core.runtime import default_output_root, state_dir
+from app.core.runtime import collect_csv_path, default_output_root, state_dir
 from app.core.scrape import scrape_reel_urls
 from app.core.urls import (
     FEED,
+    PINTEREST_RESERVED,
     SINGLE,
     TIKTOK_SEC_UID_PREFIX,
     UNSUPPORTED_FEED,
@@ -18,6 +25,7 @@ from app.core.urls import (
     classify_source,
     collection_strategy,
     detect_platform,
+    instagram_ytdlp_list_url,
     is_tiktok_user_feed,
     normalize_source_url,
     tiktok_sec_uid,
@@ -84,7 +92,9 @@ def entry_from_info(info, fallback_url=""):
 
 def extra_platform(info):
     key = (info.get("extractor_key") or info.get("extractor") or "").lower()
-    for name in ("facebook", "instagram", "youtube", "tiktok", "twitter"):
+    if "bili" in key:
+        return "bilibili"
+    for name in ("facebook", "instagram", "youtube", "tiktok", "twitter", "douyin", "kuaishou", "pinterest"):
         if name in key:
             return name
     return "unknown"
@@ -158,7 +168,7 @@ def write_entries_csv(path, entries):
     return path
 
 
-def _ydl_opts(cookies_browser="", quiet=True):
+def _ydl_opts(cookies_browser="", quiet=True, cookies_file="", dateafter=""):
     opts = {
         "quiet": quiet,
         "no_warnings": True,
@@ -171,6 +181,14 @@ def _ydl_opts(cookies_browser="", quiet=True):
     if spec:
         browser, _, profile = spec.partition(":")
         opts["cookiesfrombrowser"] = (browser, profile or None, None, None)
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    if dateafter:
+        try:
+            from yt_dlp.utils import DateRange
+            opts["daterange"] = DateRange(dateafter, "99991231")
+        except Exception:
+            pass
     return opts
 
 
@@ -255,10 +273,11 @@ def _push_entries(on_entries, entries):
 
 def _collect_ytdlp(
     url, *, log, should_stop, cookies_browser="", ydl_cls=None, sleep=time.sleep,
-    cache_path=None, feed=None, on_entries=None,
+    cache_path=None, feed=None, on_entries=None, cookies_file="", dateafter="",
 ):
     kind = classify_source(url) if feed is None else (FEED if feed else SINGLE)
-    opts = _ydl_opts(cookies_browser)
+    after = dateafter if detect_platform(url) == "tiktok" else ""
+    opts = _ydl_opts(cookies_browser, cookies_file=cookies_file, dateafter=after)
     if kind == FEED:
         url = _tiktok_feed_url(url, log, cache_path)
         opts["extract_flat"] = "in_playlist"
@@ -280,7 +299,7 @@ def _collect_ytdlp(
             if pending else f"Found {len(raw)} item(s)."
         )
         entries = []
-        full_opts = _ydl_opts(cookies_browser)
+        full_opts = _ydl_opts(cookies_browser, cookies_file=cookies_file, dateafter=after)
         full_opts["extract_flat"] = False
         full_opts["noplaylist"] = True
         done = 0
@@ -328,15 +347,130 @@ def _collect_ytdlp(
     return entries
 
 
+def _pinterest_path_segments(url):
+    return [unquote(part) for part in urlparse(url).path.split("/") if part]
+
+
+def _entry_from_pinterest_pin(item):
+    pin_id = str(item.get("id") or "").strip()
+    if not pin_id:
+        return None
+    title = collapse_text(item.get("grid_title") or item.get("title"))
+    description = collapse_text(
+        item.get("description") or item.get("seo_description") or title
+    )
+    return entry_from_url(
+        f"https://www.pinterest.com/pin/{pin_id}/",
+        id=pin_id,
+        title=title,
+        description=description,
+        duration=_pinterest_pin_duration(item),
+        platform="pinterest",
+        extractor_key="Pinterest",
+        webpage_url_domain="pinterest.com",
+    )
+
+
+def _collect_pinterest_page(resource, options, bookmark, should_stop):
+    check_stop(should_stop)
+    query = dict(options)
+    if bookmark:
+        query["bookmarks"] = [bookmark]
+    page = pinterest_resource(resource, query)
+    items = page.get("data")
+    if not isinstance(items, list):
+        items = []
+    return items, page.get("bookmark")
+
+
+def _collect_pinterest_feed(url, *, log, should_stop, on_entries=None):
+    """Paginate BoardFeed or UserPins; keep image-only pins."""
+    segments = _pinterest_path_segments(url)
+    if not segments or segments[0].lower() in PINTEREST_RESERVED:
+        raise ValueError("Not a Pinterest board or profile URL.")
+    username = segments[0]
+    if len(segments) >= 2:
+        slug = segments[1]
+        log("Listing Pinterest board…")
+        board = pinterest_resource("Board", {"slug": slug, "username": username})
+        data = board.get("data") if isinstance(board, dict) else None
+        board_id = (data or {}).get("id") if isinstance(data, dict) else None
+        if not board_id:
+            raise ValueError("Pinterest board was not found.")
+        resource = "BoardFeed"
+        options = {"board_id": board_id, "page_size": 250}
+    else:
+        log("Listing Pinterest profile pins…")
+        resource = "UserPins"
+        options = {"username": username, "page_size": 250}
+
+    bookmark = None
+    entries = []
+    while True:
+        items, bookmark = _collect_pinterest_page(resource, options, bookmark, should_stop)
+        batch = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "pin":
+                continue
+            entry = _entry_from_pinterest_pin(item)
+            if entry:
+                batch.append(entry)
+        if batch:
+            entries.extend(batch)
+            _push_entries(on_entries, batch)
+        if not bookmark:
+            break
+    if not entries:
+        raise ValueError("No pins found at that Pinterest URL.")
+    log(f"Found {len(entries)} pin(s).")
+    return _unique_entries(entries)
+
+
 def _unique_entries(entries):
-    found, seen = [], set()
+    found, index = [], {}
     for entry in entries:
         url = entry.get("url")
-        if not url or url in seen:
+        if not url:
             continue
-        seen.add(url)
+        if url in index:
+            current = found[index[url]]
+            for key in ("title", "description", "uploader", "duration"):
+                if entry.get(key) and not current.get(key):
+                    current[key] = entry[key]
+            continue
+        index[url] = len(found)
         found.append(entry)
     return found
+
+
+def _enrich_facebook_captions(
+    entries, *, log, should_stop, cookies_browser="", cookies_file="",
+    ydl_cls=None, sleep=time.sleep, on_entries=None,
+):
+    """Fill empty Facebook titles with yt-dlp captions after the Chrome scrape."""
+    pending = [
+        entry for entry in entries
+        if not collapse_text(entry.get("title")) and not collapse_text(entry.get("description"))
+    ]
+    if not pending:
+        return entries
+    log(f"Fetching captions for {len(pending)} Facebook reel(s)…")
+    opts = _ydl_opts(cookies_browser, cookies_file=cookies_file)
+    opts["noplaylist"] = True
+    done = 0
+    for entry in pending:
+        check_stop(should_stop)
+        detail = _extract_detail(ydl_cls, entry["url"], opts, should_stop, sleep=sleep)
+        done += 1
+        if detail:
+            filled = entry_from_info(detail, entry["url"])
+            for key in ("title", "description", "uploader", "duration"):
+                if filled.get(key) and not entry.get(key):
+                    entry[key] = filled[key]
+            _push_entries(on_entries, [entry])
+        if done == 1 or done % 10 == 0 or done == len(pending):
+            log(f"Captions {done}/{len(pending)}")
+    return entries
 
 
 def collect_entries(
@@ -354,12 +488,18 @@ def collect_entries(
     cache_path=None,
     feed=None,
     on_entries=None,
+    cookies_file="",
+    dateafter="",
 ):
-    """Collect entries and write <output_root>/<channel>.csv. Returns (csv_path, entries).
+    """Collect entries and write AppData collect/<channel>.csv. Returns (csv_path, entries).
 
     `feed` overrides the URL-based guess: True lists a playlist, False keeps a
     single post even when the link also names a list. `on_entries` receives
     each batch as soon as it is known so the GUI can sync the Grabber table.
+
+    Facebook and Instagram feeds keep strategy ``selenium`` (Chrome may still
+    open) but try yt-dlp first and only fall back to scrape_reel_urls when
+    listing fails. Instagram /reposts is not listed by yt-dlp.
     """
     output_root = output_root or default_output_root()
     url = normalize_source_url(url)
@@ -368,10 +508,56 @@ def collect_entries(
         platform = detect_platform(url)
         raise ValueError(UNSUPPORTED_FEED_MESSAGES.get(platform, "This feed URL is not supported."))
     if strategy == "selenium":
+        platform = detect_platform(url)
+        site = "Instagram" if platform == "instagram" else "Facebook"
+        ytdlp_feed = True if feed is None else feed
+        list_url = instagram_ytdlp_list_url(url) if platform == "instagram" else url
+        entries = None
+        if list_url is None:
+            log(f"yt-dlp cannot list that {site} tab; opening Chrome.")
+        else:
+            try:
+                entries = _collect_ytdlp(
+                    list_url, log=log, should_stop=should_stop,
+                    cookies_browser=cookies_browser, ydl_cls=ydl_cls, sleep=sleep,
+                    cache_path=cache_path, feed=ytdlp_feed, on_entries=on_entries,
+                    cookies_file=cookies_file, dateafter=dateafter,
+                )
+            except StopRequested:
+                raise
+            except Exception as exc:
+                detail = str(exc).strip()
+                log(
+                    f"yt-dlp found no {site} items; opening Chrome."
+                    + (f" ({detail})" if detail else "")
+                )
+                entries = None
+            else:
+                if entries:
+                    csv_path = collect_csv_path(channel)
+                    write_entries_csv(csv_path, entries)
+                    log(f"Collected {len(entries)} item(s) via yt-dlp; skipped Chrome.")
+                    entries = _enrich_facebook_captions(
+                        entries, log=log, should_stop=should_stop,
+                        cookies_browser=cookies_browser, cookies_file=cookies_file,
+                        ydl_cls=ydl_cls, sleep=sleep, on_entries=on_entries,
+                    )
+                    return csv_path, entries
+                log(f"yt-dlp found no {site} items; opening Chrome.")
+
         streamed = []
 
-        def push_urls(urls):
-            batch = [entry_from_url(item) for item in urls]
+        def push_urls(items):
+            batch = []
+            for item in items:
+                if isinstance(item, str):
+                    batch.append(entry_from_url(item))
+                else:
+                    batch.append(entry_from_url(
+                        item.get("url"),
+                        title=item.get("title"),
+                        description=item.get("description") or item.get("title"),
+                    ))
             streamed.extend(batch)
             _push_entries(on_entries, batch)
 
@@ -388,16 +574,42 @@ def collect_entries(
         entries = _unique_entries(streamed) or [
             entry_from_url(item) for item in read_urls(csv_path)
         ]
+        entries = _enrich_facebook_captions(
+            entries, log=log, should_stop=should_stop,
+            cookies_browser=cookies_browser, cookies_file=cookies_file,
+            ydl_cls=ydl_cls, sleep=sleep, on_entries=on_entries,
+        )
         if on_entries and not streamed and entries:
             on_entries(entries)
         return csv_path, entries
+
+    kind = classify_source(url) if feed is None else (FEED if feed else SINGLE)
+    if detect_platform(url) == "pinterest" and kind == FEED:
+        try:
+            entries = _collect_pinterest_feed(
+                url, log=log, should_stop=should_stop, on_entries=on_entries,
+            )
+        except StopRequested:
+            raise
+        except Exception as exc:
+            detail = str(exc).strip()
+            log(
+                "Pinterest API failed; using yt-dlp."
+                + (f" ({detail})" if detail else "")
+            )
+        else:
+            csv_path = collect_csv_path(channel)
+            write_entries_csv(csv_path, entries)
+            log(f"Collected {len(entries)} item(s).")
+            return csv_path, entries
 
     entries = _collect_ytdlp(
         url, log=log, should_stop=should_stop,
         cookies_browser=cookies_browser, ydl_cls=ydl_cls, sleep=sleep,
         cache_path=cache_path, feed=feed, on_entries=on_entries,
+        cookies_file=cookies_file, dateafter=dateafter,
     )
-    csv_path = os.path.join(output_root, f"{channel}.csv")
+    csv_path = collect_csv_path(channel)
     write_entries_csv(csv_path, entries)
     log(f"Collected {len(entries)} item(s).")
     return csv_path, entries

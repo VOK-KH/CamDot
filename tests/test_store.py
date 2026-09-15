@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.core import store
 
@@ -64,6 +65,18 @@ class Store(unittest.TestCase):
                     f.write(b"x")
             found = store.list_output_files(folder, "abc", finished)
             self.assertEqual(set(found), {os.path.abspath(finished), os.path.abspath(part)})
+
+    def test_list_and_archive_paths_use_channel_state_dir(self):
+        with tempfile.TemporaryDirectory() as state:
+            with patch("app.core.runtime.state_dir", return_value=state):
+                self.assertEqual(
+                    store.list_path("downloads", "jireel"),
+                    os.path.join(state, "channels", "jireel", store.LIST_NAME),
+                )
+                self.assertEqual(
+                    store.archive_path("downloads", "jireel"),
+                    os.path.join(state, "channels", "jireel", store.ARCHIVE_NAME),
+                )
 
     def test_forget_archive_ids_drops_matching_lines(self):
         with tempfile.TemporaryDirectory() as folder:

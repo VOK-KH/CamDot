@@ -34,6 +34,10 @@ class PlatformFromExtractor(unittest.TestCase):
         self.assertEqual(platform_from_extractor("vm.tiktok"), "tiktok")
         self.assertEqual(platform_from_extractor("", "x.com"), "twitter")
         self.assertEqual(platform_from_extractor("", "www.facebook.com"), "facebook")
+        self.assertEqual(platform_from_extractor("BiliIntl"), "bilibili")
+        self.assertEqual(platform_from_extractor("", "www.bilibili.tv"), "bilibili")
+        self.assertEqual(platform_from_extractor("Douyin"), "douyin")
+        self.assertEqual(platform_from_extractor("", "www.douyin.com"), "douyin")
 
 
 class FaviconFetch(unittest.TestCase):

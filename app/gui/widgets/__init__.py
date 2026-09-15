@@ -4,9 +4,11 @@ from app.gui.widgets.header import CheckHeaderView
 from app.gui.widgets.loader import ExtractLoader
 from app.gui.widgets.overview import OverviewPanel
 from app.gui.widgets.progress import ProgressDelegate
+from app.gui.widgets.properties import PropertiesPanel
+from app.gui.widgets.tray import TrayController
 from app.gui.widgets.views import ViewsPanel
 
 __all__ = [
     "CheckHeaderView", "ExtractLoader", "GrabberPanel", "OverviewPanel",
-    "ProgressDelegate", "ViewsPanel",
+    "ProgressDelegate", "PropertiesPanel", "TrayController", "ViewsPanel",
 ]

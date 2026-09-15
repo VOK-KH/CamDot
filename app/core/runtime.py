@@ -64,6 +64,124 @@ def state_dir():
     return os.path.join(base, "reels-downloader")
 
 
+def chrome_profile_dir():
+    """Persistent Chrome user-data-dir for Selenium logins."""
+    return os.path.join(state_dir(), "chrome-profile")
+
+
+def collect_csv_path(channel):
+    """Collection CSV for a channel (not next to downloaded videos)."""
+    return os.path.join(state_dir(), "collect", f"{channel}.csv")
+
+
+def channel_state_dir(channel):
+    """Per-channel folder for list.json and .downloaded.txt."""
+    return os.path.join(state_dir(), "channels", channel)
+
+
+def util_cache_dir():
+    """Favicon and other small caches under AppData."""
+    return os.path.join(state_dir(), "cache")
+
+
+def _is_empty_dir(path):
+    if not os.path.isdir(path):
+        return True
+    try:
+        return not os.listdir(path)
+    except OSError:
+        return False
+
+
+def _merge_tree(src, dest):
+    """Move items from src into dest; keep dest files when names collide."""
+    os.makedirs(dest, exist_ok=True)
+    try:
+        names = os.listdir(src)
+    except OSError:
+        return
+    for name in names:
+        from_path = os.path.join(src, name)
+        to_path = os.path.join(dest, name)
+        try:
+            if os.path.isdir(from_path):
+                if not os.path.exists(to_path):
+                    shutil.move(from_path, to_path)
+                elif os.path.isdir(to_path):
+                    _merge_tree(from_path, to_path)
+            elif not os.path.exists(to_path):
+                shutil.move(from_path, to_path)
+        except OSError:
+            continue
+    try:
+        os.rmdir(src)
+    except OSError:
+        pass
+
+
+def _relocate(src, dest):
+    """Move src to dest if dest is missing or empty; otherwise merge."""
+    if not os.path.exists(src):
+        return
+    if os.path.abspath(src) == os.path.abspath(dest):
+        return
+    if not os.path.exists(dest):
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        try:
+            shutil.move(src, dest)
+        except OSError:
+            pass
+        return
+    if os.path.isdir(src) and os.path.isdir(dest):
+        if _is_empty_dir(dest):
+            try:
+                os.rmdir(dest)
+                shutil.move(src, dest)
+            except OSError:
+                _merge_tree(src, dest)
+        else:
+            _merge_tree(src, dest)
+
+
+def sweep_download_folder(output_root):
+    """Move leftover util files out of the user download folder into AppData.
+
+    Videos and .part files stay under output_root. Safe to call on every startup.
+    """
+    if not output_root or not os.path.isdir(output_root):
+        return
+    root = os.path.abspath(output_root)
+    _relocate(os.path.join(root, ".chrome-profile"), chrome_profile_dir())
+    _relocate(os.path.join(root, ".cache"), util_cache_dir())
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    for name in names:
+        src = os.path.join(root, name)
+        if os.path.isfile(src) and name.lower().endswith(".csv"):
+            dest = collect_csv_path(os.path.splitext(name)[0])
+            if not os.path.exists(dest):
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                try:
+                    shutil.move(src, dest)
+                except OSError:
+                    pass
+            continue
+        if not os.path.isdir(src) or name.startswith("."):
+            continue
+        dest_dir = channel_state_dir(name)
+        for fname in ("list.json", ".downloaded.txt"):
+            leftover = os.path.join(src, fname)
+            dest = os.path.join(dest_dir, fname)
+            if os.path.isfile(leftover) and not os.path.exists(dest):
+                os.makedirs(dest_dir, exist_ok=True)
+                try:
+                    shutil.move(leftover, dest)
+                except OSError:
+                    pass
+
+
 def _state_path():
     return os.path.join(state_dir(), "runtime-update.json")
 

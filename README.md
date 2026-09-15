@@ -94,21 +94,26 @@ the window resizes.
 
 ### Overview
 Above the bottom tools sits an Overview strip that reads the tab you are on,
-like JDownloader's. On **Download** it is **Download Overview** — Link(s), Done,
-Total Bytes, Downloadspeed, Bytes loaded, Remaining Bytes, ETA, Failed, Running
-Downloads and Hoster(s). On **Grabber** it is **Grabber Overview** — Link(s),
-Checked, Total Bytes, Known Size, Hoster(s) and Unknown Size, because nothing
-is downloading yet. The numbers follow the same 1.5 s poll as the status strip.
+like JDownloader's. On **Download** it is **Download Overview** — Links, Done,
+Speed, Left, and ETA. On **Grabber** it is **Grabber Overview** — Links,
+Checked, Known, and Unknown, because nothing is downloading yet. The strip
+stays short (about 56–104 px); extra splitter space goes to the table.
+The numbers follow the same 1.5 s poll as the status strip.
 Close it with the **×** on its title line or **View → Show overview**
 (Ctrl+Shift+O); hiding both it and the status bar stops the polling.
 
 ### Bottom tools
 The strip under the list follows JDownloader's: **Add New Links** on the left
 (its arrow menu also pastes the clipboard or opens the download folder), the
-clipboard-watch toggle beside it, then the filter — a field picker (**All
-fields**, Title, ID, Uploader, Host, URL) and a search box that narrows both
-the Download and Grabber tables at once. The job buttons sit on the right,
-ending with **Start all Downloads**. Hide the whole strip with
+clipboard-watch toggle beside it, then the save-path field. Tables are
+narrowed from the **Views** strip (Video / Music / Image and Host). The job
+buttons sit on the right,
+ending with **Start all Downloads** and a gear for tab options. On **Grabber**
+the gear has **Add at top**, **Auto confirm**, **Autostart Download**, sidebar
+and overview toggles, and **Customize this Bottom Panel**. On **Download** it
+sets chunks, workers, and an optional speed limit. **Package or Link Properties**
+opens a short form above the strip (Name, Save to, Download from, Comment).
+Hide the whole strip with
 **View → Show bottom tools** (Ctrl+Shift+B).
 
 **Add New Links** opens a paste box that takes **one link per line**, so a whole
@@ -128,9 +133,17 @@ minimise/maximise/close buttons, and dragging its empty part moves the window
 outermost few pixels are the resize border — the pointer turns into a resize
 cursor there, exactly as a native frame would.
 
+Close or minimise hides the window to the system tray when
+**Settings → General → Keep running in the system tray** is on (the default).
+Clipboard Link Grabber and downloads keep running; left-click or double-click
+the tray icon restores the window. Right-click the tray for Start Downloads,
+tool updates, the download folder, clipboard monitoring, speed limits, Settings,
+and Exit. **File → Exit** and Ctrl+Q still quit. If the tray is unavailable,
+closing the window quits as before.
+
 The output name is derived from the page URL. Override it in
 **Settings → General**, which also contains the output folder, concurrency,
-theme, and log options. By default files go to
+theme, tray, and log options. By default files go to
 `Downloads/Reels Downloader/<name>/` on Windows and Linux, and
 `Documents/Reels Downloader/<name>/` on macOS. **Settings → Tools** can override Chrome (Facebook
 reels collection only) and FFmpeg, and can read cookies from your installed
@@ -138,8 +151,8 @@ browser. Leave Chrome/FFmpeg blank to use automatic discovery and bundled
 FFmpeg.
 
 Click a column header to sort, drag a header to reorder columns, or right-click
-the header for the column menu: tick the columns you want (**Uploader**, **File**
-and **URL** start hidden), **Fit columns to content**, **Reset columns**, or
+the header for the column menu: tick the columns you want (**Uploader**, **Save to**
+and **Download from** start hidden), **Horizontal scrollbar**, **Fit columns to content**, **Reset columns**, or
 **Lock column layout** to freeze widths and order. Drag across
 rows to select a range, or tick the checkbox to pick which reels to download.
 Right-click for copy, open, and **Remove from list**. The trash button and Delete
@@ -154,7 +167,8 @@ named home next to its shortcut:
 - **File** — Collect, Download, Cancel job, Open download folder, Settings, Exit.
 - **Edit** — Select all, Invert checks, Copy URL, Copy caption, Open in browser,
   Remove selected, Remove all.
-- **View** — Show log, Show status bar, Show overview, Show bottom tools, Dark
+- **View** — Show log, Show status bar, Show overview, Package or Link
+  Properties, Show sidebar, Show bottom tools, Dark
   theme, Lock column layout, Reset columns.
 - **Tools** — Link Grabber, Show grabber monitor, Check for tool updates (yt-dlp
   and FFmpeg), Open app data folder.

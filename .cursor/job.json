@@ -94,6 +94,204 @@
       ],
       "notes": "",
       "updated_at": "2026-09-14T01:00:00Z"
+    },
+    {
+      "id": "JOB-006",
+      "title": "Facebook feed: yt-dlp then Selenium fallback",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/core/collect.py", "app/core/urls.py", "tests/test_collect.py", "tests/test_urls.py"],
+      "prompt": "User request: Extract Facebook page/reels feeds without opening Chrome when possible. Try yt-dlp first; if it fails or returns no items, keep using Selenium (visible Chrome login/scroll).\n\nImplement in collect_entries in app/core/collect.py (not GUI):\n- When collection_strategy is selenium (FACEBOOK_REELS_FEED), first call existing _collect_ytdlp with the same cookies_browser, cookies_file, ydl_cls, should_stop, log, on_entries, etc.\n- Success = at least one entry; write CSV, log that Chrome was skipped, optionally still run _enrich_facebook_captions if titles are empty, return.\n- Empty list or any extract error: log a short fallback message and run the existing scrape_reel_urls Selenium path unchanged.\n- StopRequested / user abort must NOT fall back to Selenium; re-raise.\n- Do not open Chrome for already-listed Download rows (download path is unchanged).\n- Update collection_strategy docstring if needed. Keep strategy value 'selenium' so tests know Facebook feeds still may use Chrome; or add 'ytdlp_then_selenium' only if you update all tests.\n- Tests (no network, no Chrome): (1) ytdlp returns entries -> scrape_reel_urls NOT called; (2) ytdlp empty or raises -> scrape_reel_urls IS called (existing facebook tests should still pass if they patch scrape OR you also patch _collect_ytdlp to fail/empty); (3) StopRequested from ytdlp does not call scrape.\n- Run: uv run python -m unittest discover -s tests -v\nReturn files changed, behavior, tests, remaining risk.",
+      "acceptance": [
+        "Facebook reels feed tries yt-dlp before Chrome",
+        "Selenium still used when yt-dlp finds nothing or errors",
+        "Stop/abort does not open Chrome",
+        "Unit tests pass without network"
+      ],
+      "notes": "Done: yt-dlp first, Selenium if empty/error; StopRequested does not open Chrome. 225 tests OK.",
+      "updated_at": "2026-09-14T14:40:00Z"
+    },
+    {
+      "id": "JOB-007",
+      "title": "Instagram profile, reels tab, and reposts",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/core/urls.py", "app/core/collect.py", "app/core/scrape.py", "tests/test_urls.py", "tests/test_collect.py", "tests/test_scrape.py"],
+      "prompt": "User cannot extract Instagram feeds. Errors:\n- ERROR: Unsupported URL: https://www.instagram.com/2002chii_/reels/?hl=en\n- ERROR: [instagram:user] 2002chii_: Unable to extract data\n- ERROR: Unsupported URL: https://www.instagram.com/2002chii_/reposts/?hl=en\nThey want profile, /reels/ tab, and /reposts/ tab. qt.qpa.mime clipboard retry is unrelated; ignore.\n\nRoot cause: _classify_instagram treats username/reels as SINGLE because segments[1] in ('p','reel','reels','tv'). yt-dlp has no extractor for /username/reels or /username/reposts. Profile instagram:user often needs cookies; then it should fall back to Selenium like Facebook.\n\nDo this:\n1. Fix _classify_instagram:\n   - SINGLE: /p/CODE, /reel/CODE, /tv/CODE, /stories/..., /username/p|reel|tv/CODE\n   - FEED: /username/, /username/reels, /username/reposts (and tagged if easy)\n   - Do NOT classify /username/reels as SINGLE\n2. normalize_source_url: strip Instagram tracking query (hl=en and similar) but keep the tab path (reels/reposts).\n3. collection_strategy: Instagram FEED uses same 'selenium' strategy as Facebook (yt-dlp first, Chrome if empty/error). StopRequested must not open Chrome.\n4. When calling _collect_ytdlp for Instagram:\n   - Bare /username/ : use that URL\n   - /username/reels : rewrite to https://www.instagram.com/username/ for yt-dlp (InstagramUserIE only accepts the profile). If ytdlp returns items, skip Chrome (posts+reels mix is OK).\n   - /username/reposts : do NOT rewrite to profile (wrong content). Skip or fail yt-dlp and scrape the reposts page.\n5. Extend scrape (scrape_reel_urls or sibling): Instagram login message; harvest a[href] matching /p/, /reel/, /tv/ (not the profile/reels/reposts tab itself). Reuse Chrome profile. Keep Facebook /reel/ harvest working.\n6. Tests, no network: classify/normalize for the three user URLs; collect ytdlp success skips scrape; ytdlp fail/empty calls scrape; reposts does not treat profile rewrite as success; harvest unique IG post URLs. Run uv run python -m unittest discover -s tests -v\nReturn files, behavior, tests, risk.\nDo not commit. Do not edit .cursor/job.json.",
+      "acceptance": [
+        "/username/reels and /username/reposts classify as feeds not singles",
+        "yt-dlp first then Selenium for Instagram profile/reels; Selenium for reposts if yt-dlp cannot list them",
+        "Facebook scrape still works",
+        "Unit tests pass without network"
+      ],
+      "notes": "Done: IG profile/reels/reposts as feeds; ytdlp then Selenium; 232 tests OK.",
+      "updated_at": "2026-09-14T14:55:00Z"
+    },
+    {
+      "id": "JOB-008",
+      "title": "AppData for util files; downloads folder videos only",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": [
+        "app/core/runtime.py",
+        "app/core/collect.py",
+        "app/core/scrape.py",
+        "app/core/store.py",
+        "app/core/download.py",
+        "app/core/platform_icons.py",
+        "app/gui/window.py",
+        "app/gui/jobs.py",
+        "tests/"
+      ],
+      "prompt": "User screenshot of the download folder (Downloads/Reels Downloader or similar) shows .chrome-profile, many *.csv files (including empty ones), yt-dlp.csv, plus video channel folders. They want: that folder stores VIDEO/SOURCE DOWNLOADS ONLY. Temp/util files must go to Windows AppData (existing state_dir() = %LOCALAPPDATA%\\\\reels-downloader). Then clean leftovers out of the download folder.\n\nImplement:\n1. runtime.py helpers (use existing state_dir()):\n   - chrome_profile_dir() -> state_dir()/chrome-profile\n   - collect_csv_path(channel) -> state_dir()/collect/{channel}.csv\n   - channel_state_dir(channel) -> state_dir()/channels/{channel} for list.json and .downloaded.txt\n   - favicon/cache under state_dir()/cache\n2. scrape.py: Chrome user-data-dir = chrome_profile_dir(), NOT output_root/.chrome-profile. Collection CSV still written but to collect_csv_path.\n3. collect.py: write CSVs under collect_csv_path, not output_root.\n4. store.py + download.py: list.json and .downloaded.txt live in channel_state_dir(channel), not next to videos. Videos still go to output_root/channel/. Update list_path/archive_path call sites (window.py _csv_path, _flush_store, _load_saved_list, forget_archive; download_urls archive_path).\n5. platform_icons cache_dir: state_dir, not output_root/.cache.\n6. sweep_download_folder(output_root): one-time/safe cleanup of the user download folder:\n   - Move .chrome-profile -> chrome_profile_dir() if dest empty/missing; else leave or merge simply (do not delete videos).\n   - Move root *.csv into collect/\n   - Move .cache into state cache\n   - In each channel subfolder, move list.json and .downloaded.txt into channel_state_dir; leave video/.part files.\n   - Do not delete channel folders that contain media.\n   - Call this from GUI startup (window init after output_root is known) so the user's current messy folder gets cleaned.\n7. Tests with patched state_dir + temp dirs: new paths; sweep moves csv/chrome; downloads still write media under output_root; existing tests updated. uv run python -m unittest discover -s tests -v\nDo not commit. Do not edit .cursor/job.json.\nReturn files, behavior, tests, risk.",
+      "acceptance": [
+        "Download folder only used for channel video directories",
+        "Chrome profile, CSVs, list.json, archive, favicon cache live under AppData state_dir",
+        "Startup sweep relocates existing util files without deleting videos",
+        "Unit tests pass without network"
+      ],
+      "notes": "Done: util files under LOCALAPPDATA/reels-downloader; sweep on GUI start; 236 tests OK.",
+      "updated_at": "2026-09-14T15:40:00Z"
+    },
+    {
+      "id": "JOB-009",
+      "title": "Views icons, drop filter, compact overview max height",
+      "assignee": "gui-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": [
+        "app/gui/widgets/views.py",
+        "app/gui/widgets/overview.py",
+        "app/gui/window.py",
+        "app/core/theme.py",
+        "images/icons/",
+        "tests/test_gui.py"
+      ],
+      "prompt": "User UI request from screenshots:\n1. Views type row (Video / Music / Image): add icons next to each checkbox (not text-only).\n2. Host list: use platform favicons (bundled platform SVG for known hosts via app.core.platform_icons.icon_for; for unknown hosts pull/cached favicon the same way table hosts do). Set QListWidgetItem.setIcon. Do not block tests on the network (known hosts must work with fetch=False; fetch only unknown if already cached or existing icon_for fetch flag).\n3. Remove the bottom filter path: the All fields combo + Filter line edit on the action bar (screenshot 2). Views (kind+host) remain the filter. Keep ReelFilterProxy with empty text so tables still work. Delete _build_filter_field usage. Update tests/test_gui.py that use filter_edit/filter_field (test_filter_box_narrows_both_tables, test_filter_field_picker_scopes_the_search) — replace with Views-panel filtering tests if needed, do not keep a hidden filter widget just for tests.\n4. Optimize overview for the video/download state: tighter layout (less padding/spacing), keep useful download readings (links, done, speed, left, ETA) without a huge empty panel. Grabber overview similarly compact.\n5. Set a maximum height on the Overview splitter pane so dragging the splitter cannot grow it past ~96–110px (minimum stays ~56). Enforce on OverviewPanel and/or splitterMoved so extra space goes to the table, not the overview.\n\nAdd lucide-style 24x24 SVGs in images/icons/ matching existing stroke currentColor: kind-video (film/play), kind-music, kind-image. QCheckBox.setIcon + setIconSize. Recolor via existing icons.icon() / theme like other widgets.\nRun: uv run python -m unittest discover -s tests -v\nAlso: uv run python tools/preview.py preview.png\nDo not commit. Do not edit .cursor/job.json.\nReturn files, behavior, tests, leftover risk.",
+      "acceptance": [
+        "Video/Music/Image checks show icons",
+        "Host rows show platform/favicon icons",
+        "All fields + Filter search removed from action bar",
+        "Overview has a max height and stays compact",
+        "GUI tests pass; preview.png generated"
+      ],
+      "notes": "Done: kind icons, host favicons (background pull), filter bar removed, overview 56–104px. 238 tests OK.",
+      "updated_at": "2026-09-14T16:20:00Z"
+    },
+    {
+      "id": "JOB-010",
+      "title": "Fix Twitter photos and Douyin cookies",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/core/download.py", "app/core/cookies.py", "app/core/model.py", "tests/test_download.py", "tests/test_cookies.py", "tests/test_model.py"],
+      "prompt": "User download errors (platforms are supported; extract is failing):\n1. ERROR: [twitter] 2085223295776100697: No video could be found in this tweet\n2. ERROR: [Douyin] 7681950375104610226: Fresh cookies (not necessarily logged in) are needed\nThey said: fix platform not support.\n\nContext:\n- yt-dlp TwitterIE skips photos (`type != photo`) then raise_no_formats('No video could be found in this tweet'). Image tweets must still download as images.\n- FORMAT_SELECTOR is bv*+ba/b (video+audio) which also cannot pick photos.\n- Douyin extractor needs s_v_web_id cookies. We impersonate chrome but do NOT pass --cookies-from-browser unless the user set Settings. write_netscape_cookies defaults domain to .kuaishou.com for a raw cookie line, so Douyin paste never matches .douyin.com.\n\nDo this (no network in tests; mock urllib):\nA) Twitter\n- Keep yt-dlp first for video tweets.\n- For twitter/x.com, add --extractor-args twitter:api=syndication (guest/public) in addition to existing args; still use cookies if the user set them.\n- Twitter format: use a selector that still prefers merged video+audio but can fall back (e.g. bv*+ba/b/best) — do not break Bilibili.\n- If yt-dlp exits non-zero for a twitter URL, fallback: resolve status id, GET a public tweet-media JSON (try api.fxtwitter.com/status/{id} then api.vxtwitter.com/Twitter/status/{id}), download photo (and video if JSON has mp4) files into the same output_dir with id in the filename. Mark done if at least one file saved. Do not treat image tweets as unsupported.\n- media_kind: x.com/twitter.com /status/.../photo/ is image.\nB) Douyin\n- If cookies_browser and cookies_file are both empty, auto --cookies-from-browser chrome for douyin (and kuaishou).\n- Keep --impersonate chrome.\n- write_netscape_cookies: if curl/url host is douyin, use .douyin.com; if raw cookie line with no host, write the same cookies for .douyin.com AND .kuaishou.com (and existing host if any) so paste works for both.\nC) Tests for _yt_dlp_args twitter extractor-args and format; douyin auto cookies-from-browser; netscape domains; twitter fallback with mocked HTTP writing a jpg; media_kind photo tweet. uv run python -m unittest discover -s tests -v\nDo not commit. Do not edit .cursor/job.json.\nReturn files, behavior, tests, risk.",
+      "acceptance": [
+        "Twitter image tweets download photos instead of failing as no-video",
+        "Douyin gets browser cookies by default and cURL cookies use .douyin.com",
+        "Bilibili format selector still prefers video+audio merge",
+        "Unit tests pass without network"
+      ],
+      "notes": "Done: Twitter photo fallback via fxtwitter/vxtwitter; Douyin auto Chrome cookies + .douyin.com Netscape. 247 tests OK.",
+      "updated_at": "2026-09-14T16:55:00Z"
+    },
+    {
+      "id": "JOB-011",
+      "title": "Grabber table right-click context menu",
+      "assignee": "gui-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/gui/window.py", "tests/test_gui.py"],
+      "prompt": "User: update grabber context menu for right-click table.\n\nToday `_show_context_menu` in app/gui/window.py is shared. On Grabber it still shows Download-oriented items: \"Open reel in browser\" and \"Show downloaded file\" (Grabber rows have no files yet). Add to downloads is the only grabber extra.\n\nGive Grabber a review-list context menu (JDownloader LinkGrabber style). Keep the Download table menu as-is (copy, open in browser, show file, check/uncheck, remove).\n\nGrabber right-click ON selected rows:\n1. Add to downloads (primary, download icon) — existing `_add_to_downloads`\n2. Copy URL, Copy caption\n3. Open in browser (not \"Open reel\")\n4. Check selected / Uncheck selected / Invert checks (`_toggle_visible_checks`)\n5. Move up / Move down (`_move_selected`)\n6. Remove from list / Remove all from list\nDo NOT show Show downloaded file on Grabber.\n\nGrabber right-click on empty area (no row):\n- Add new links (`_add_links`)\n- Paste from clipboard (`_add_from_clipboard`) if that helper exists\n- Remove all if the table has rows\n\nDownload table empty-area can stay Remove all only.\n\nReuse existing slots; wire icons like other menus. Tests: build/exec not required to click every item if you inspect QMenu actions — at least assert Grabber menu action titles include Add to downloads and Open in browser, exclude Show downloaded file; Download menu still has Show downloaded file. You can refactor `_show_context_menu` to branch on `table is self.grab_table` or return the QMenu from a helper used by the test (exec still maps to viewport).\nEasiest test: extract `_context_menu_for(table)` that returns QMenu without exec, call it from tests with grab_table vs table after adding URLs and selecting a row.\nRun: uv run python -m unittest discover -s tests -v\nDo not commit. Do not edit .cursor/job.json.\nReturn files, behavior, tests, risk.",
+      "acceptance": [
+        "Grabber right-click has Add to downloads, copy, open, check, move, remove",
+        "Grabber menu does not show Show downloaded file",
+        "Download table context menu still shows file reveal",
+        "GUI tests pass"
+      ],
+      "notes": "Done: Grabber review-list context menu; Download menu kept file reveal. 250 tests OK.",
+      "updated_at": "2026-09-14T17:10:00Z"
+    },
+    {
+      "id": "JOB-012",
+      "title": "Queue fields: comment, added, prepend, rate limit",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/core/model.py", "app/core/download.py", "app/gui/jobs.py", "app/gui/constants.py", "tests/test_model.py", "tests/test_download.py"],
+      "prompt": "Support JDownloader-like queue fields and download options. GUI will wire panels in JOB-013.\n\n1) model.py Reel + table:\n- Add slots: comment (str), added_at (unix float or ISO stored in as_entry).\n- New column at end: COL_ADDED header 'Added' (datetime display, SORT_ROLE numeric).\n- headerData: keep existing columns but display labels Name (was Title), Hoster (Host), Save to (File), Download from (URL). Internal COL_* names stay.\n- add_entries(entries, prepend=False): if prepend, insert at row 0 and rebuild _row_by_url.\n- update_reel(url, **fields) for title, comment, filepath used by a properties panel. Emit dataChanged.\n- as_entry/load include comment and added_at. Default added_at=time.time() for new rows.\n- Optional COL_LOADED 'Loaded' showing downloaded bytes from percent*total when total set, else '-'. Append after Added if easy; skip if it complicates tests too much — Size already exists.\n2) download.py + jobs.py:\n- --limit-rate from limit_rate string like '50K' or empty. Pass through download_urls, _yt_dlp_args, _download_one, JobWorker.\n3) constants.py COLUMN_WIDTHS for new columns (~130).\n4) Tests: prepend; comment persist; added_at set; header labels; limit-rate in args when set and omitted when empty. unittest discover -s tests -v\nDo not commit. Do not edit job.json.",
+      "acceptance": [
+        "Reel has comment and added_at; Added column displays",
+        "add_entries can prepend",
+        "yt-dlp gets --limit-rate when configured",
+        "Unit tests pass"
+      ],
+      "notes": "Done: comment/added_at, prepend, header labels, --limit-rate. 257 tests OK.",
+      "updated_at": "2026-09-14T17:16:00Z"
+    },
+    {
+      "id": "JOB-013",
+      "title": "JD-like column menu, properties, extract auto, download gear",
+      "assignee": "gui-engineer",
+      "status": "done",
+      "priority": 2,
+      "depends_on": ["JOB-012"],
+      "files": ["app/gui/window.py", "app/gui/widgets/", "app/gui/dialogs/settings.py", "app/core/theme.py", "tests/test_gui.py"],
+      "prompt": "Depends on JOB-012. Match JDownloader UX from user screenshots (do NOT clone RapidGator/archive/captcha).\n\nA) Table column menu (header right-click, already exists):\n- Use new Name/Hoster/Save to/Download from/Added labels.\n- Add Horizontal scrollbar check (table.setHorizontalScrollBarPolicy).\n- Keep Reset columns, Fit, Lock.\n\nB) Link/File properties panel (bottom, like JD Package/File Properties):\n- Compact form: Name (title), Save to (folder+filename/filepath), Download from (URL readonly), Comment.\n- Updates selected row via update_reel. Toggle from gear: Package or Link Properties.\n- Hidden by default or shown; persist properties_visible.\n\nC) Extract / Grabber queue options (gear next to Start/Add, screenshot 2):\n- Add at top (grabber add_entries prepend) persist grab_add_at_top\n- Auto confirm: when Extract/LinkGrabber finishes successfully, call _add_to_downloads automatically (grab_auto_confirm)\n- Autostart Download: after auto confirm (or after add), call _start_download if grab_autostart\n- Overview Panel visible (existing toggle)\n- Sidebar visible (show/hide Views panel work_split)\n- Customize: open Settings\n\nD) Download options gear (screenshot 4) on Download tab / same gear switching by tab:\n- Max chunks per download = fragments spin 1-32, writes settings\n- Max simultaneous downloads = workers spin 1-16\n- Speed limit optional checkbox + rate (e.g. 50K) stored as speed_limit; passed in _speed() as limit_rate\n- Package or Link Properties, Overview visible\n\nE) After collect _on_finished success path: if grab_auto_confirm and grabber has rows, _add_to_downloads(); if grab_autostart, _start_download(). Do not autostart on cancel/fail.\n\nSettings dialog can also show these. Persist QSettings. Tests for menu titles, prepend setting used, properties panel updates title, auto flags stored. unittest + tools/preview.py preview.png\nDo not commit. Do not edit job.json.",
+      "acceptance": [
+        "Column menu includes scrollbar and JD-like names",
+        "Properties panel edits selected row",
+        "Grabber auto-confirm and autostart after successful extract",
+        "Download gear sets workers, fragments, optional speed limit",
+        "Tests pass"
+      ],
+      "notes": "Done: properties panel, column scrollbar, grabber auto-confirm/autostart, download gear. 263 tests OK.",
+      "updated_at": "2026-09-14T17:16:00Z"
+    },
+    {
+      "id": "JOB-015",
+      "title": "Per-source folders: video, audio, thumbnail from Views",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/core/download.py", "app/gui/jobs.py", "app/gui/window.py", "tests/test_download.py", "tests/test_gui.py"],
+      "prompt": "User: from Grabber extract then Download, if Views Video+Music+Image are selected, each source should download video, extracted audio, and image thumbnail. Auto-create a folder per source. Folder name = caption/title; if missing, random. Group files like the three Views types (video / audio / image).\n\nViews still filters which rows appear. checked_kinds() ALSO selects which artifacts to write.\n\nLayout under output_root/channel/:\n  {folder}/video/\n  {folder}/audio/\n  {folder}/image/\nOnly create subfolders for selected kinds.\n\nsource_folder_name(title, description, rid): sanitize Windows-illegal chars \\\\ / : * ? \" < > |, collapse whitespace, max ~80 chars. Use description then title. If empty: 8 hex random + '-' + rid (or random only).\n\nyt-dlp in _yt_dlp_args / _download_one:\n- Write into that per-source folder (pass source_folder per URL).\n- video in kinds: keep video download (current format).\n- music in kinds: --extract-audio --audio-format m4a (or best); if video also selected add --keep-video so both exist.\n- image in kinds: --write-thumbnail --convert-thumbnails jpg (ffmpeg already resolved).\n- only image: --skip-download --write-thumbnail is OK.\n- After yt-dlp, move files into video/audio/image by extension (mp4/webm/mkv/mov → video; m4a/mp3/opus/ogg/flac → audio; jpg/jpeg/png/webp → image). Do not move .part/.ytdl.\n- Twitter HTTP photo fallback saves under image/ in the same source folder.\n\nWire media_kinds (set/frozenset, default all three) and source_folders dict url→name through download_urls, _download_one, JobWorker.\n\nGUI window.py _speed() or _start_download: media_kinds = views.checked_kinds() or all three; source_folders from download model reels (description, title, rid) for the urls being downloaded.\n\nTests no network: source_folder_name caption vs random; _yt_dlp_args contains extract-audio/keep-video/write-thumbnail according to kinds; omitted when kind off; JobWorker/download_urls accept the new kwargs. unittest discover -s tests -v\nDo not commit. Do not edit job.json.",
+      "acceptance": [
+        "Each URL downloads into a caption-named folder (random if no caption)",
+        "Views video/music/image control video file, extracted audio, thumbnail",
+        "Files grouped into video/, audio/, image/ subfolders",
+        "Unit tests pass without network"
+      ],
+      "notes": "Done: per-source video/audio/image folders from Views; caption or random name. 275 tests OK.",
+      "updated_at": "2026-09-15T01:33:00Z"
+    },
+    {
+      "id": "JOB-016",
+      "title": "Pinterest board/profile pins: images and video",
+      "assignee": "core-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/core/urls.py", "app/core/collect.py", "app/core/download.py", "app/core/model.py", "tests/"],
+      "prompt": "Pinterest board/profile extract and download images+video like JDownloader.",
+      "acceptance": [
+        "Encoded board URLs normalize as feeds",
+        "Collect lists image and video pins",
+        "Download orig image when pin has no video"
+      ],
+      "notes": "Done: Board/UserPins collect; Pin JSON image/video fallback. 281 tests OK.",
+      "updated_at": "2026-09-15T01:50:00Z"
     }
   ]
 }

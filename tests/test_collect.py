@@ -1,4 +1,5 @@
 """Tests for collect routing (mocked yt-dlp, no browser)."""
+import json
 import os
 import tempfile
 import unittest
@@ -12,6 +13,8 @@ from app.core.collect import (
     remember_tiktok_user,
     tiktok_username_for_sec_uid,
 )
+from app.core.jobs import StopRequested
+from app.core.runtime import collect_csv_path
 
 SEC_UID = "MS4wLjABAAAAbur-JVGxoTBCrLVUoAFqWcFn7hiIevluwN0k_LaB4U8q3tQizemnqCpb6thhVdXQ"
 
@@ -45,15 +48,44 @@ class EntryFromInfo(unittest.TestCase):
 
 
 class CollectEntries(unittest.TestCase):
-    def test_instagram_profile_raises_before_network(self):
-        with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaises(ValueError):
-                collect_entries("x", "https://www.instagram.com/someone/", output_root=folder)
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._state_patch = patch("app.core.runtime.state_dir", return_value=self._state.name)
+        self._state_patch.start()
 
-    def test_x_timeline_raises_before_network(self):
+    def tearDown(self):
+        self._state_patch.stop()
+        self._state.cleanup()
+
+    def test_instagram_profile_uses_ytdlp(self):
+        class FakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                return {
+                    "_type": "playlist",
+                    "entries": [{
+                        "webpage_url": "https://www.instagram.com/reel/AbC/",
+                        "id": "AbC",
+                        "title": "A reel",
+                        "uploader": "someone",
+                        "extractor_key": "Instagram",
+                    }],
+                }
+
         with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaises(ValueError):
-                collect_entries("x", "https://x.com/name", output_root=folder)
+            _, entries = collect_entries(
+                "x", "https://www.instagram.com/someone/",
+                output_root=folder, ydl_cls=FakeYDL,
+            )
+        self.assertEqual(entries[0]["url"], "https://www.instagram.com/reel/AbC/")
 
     def test_single_post_uses_extract_info(self):
         class FakeYDL:
@@ -420,22 +452,286 @@ class CollectEntries(unittest.TestCase):
             )
         self.assertEqual([e["id"] for e in entries], ["one", "two"])
 
+    def test_facebook_reels_feed_uses_ytdlp_when_it_lists(self):
+        listed = [{
+            "url": "https://www.facebook.com/reel/111",
+            "id": "111",
+            "title": "Sunset",
+            "description": "River",
+            "uploader": "Ada",
+            "duration": 12,
+            "platform": "facebook",
+            "extractor_key": "Facebook",
+            "webpage_url_domain": "facebook.com",
+        }]
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect._collect_ytdlp", return_value=listed) as ytdlp:
+                with patch("app.core.collect.scrape_reel_urls") as scrape:
+                    path, entries = collect_entries(
+                        "jireel",
+                        "https://www.facebook.com/jireel/reels",
+                        output_root=folder,
+                        log=lambda *_: None,
+                    )
+                    scrape.assert_not_called()
+                    ytdlp.assert_called_once()
+                    self.assertEqual(entries[0]["id"], "111")
+                    self.assertEqual(path, collect_csv_path("jireel"))
+                    self.assertTrue(os.path.isfile(path))
+
     def test_facebook_reels_feed_uses_selenium(self):
         with tempfile.TemporaryDirectory() as folder:
             csv_path = os.path.join(folder, "jireel.csv")
             with open(csv_path, "w", encoding="utf-8") as f:
                 f.write("https://www.facebook.com/reel/111\n")
-            with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
-                path, entries = collect_entries(
-                    "jireel",
-                    "https://www.facebook.com/jireel/reels",
-                    output_root=folder,
-                    log=lambda *_: None,
-                )
+            with patch("app.core.collect._collect_ytdlp", side_effect=ValueError("no items")):
+                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                    with patch("app.core.collect._extract_detail", return_value=None):
+                        path, entries = collect_entries(
+                            "jireel",
+                            "https://www.facebook.com/jireel/reels",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
             scrape.assert_called_once()
             self.assertEqual(path, csv_path)
             self.assertEqual(entries[0]["platform"], "facebook")
             self.assertEqual(entries[0]["id"], "111")
+
+    def test_facebook_reels_feed_falls_back_when_ytdlp_empty(self):
+        with tempfile.TemporaryDirectory() as folder:
+            csv_path = os.path.join(folder, "jireel.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write("https://www.facebook.com/reel/111\n")
+            with patch("app.core.collect._collect_ytdlp", return_value=[]):
+                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                    with patch("app.core.collect._extract_detail", return_value=None):
+                        collect_entries(
+                            "jireel",
+                            "https://www.facebook.com/jireel/reels",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+            scrape.assert_called_once()
+
+    def test_facebook_reels_ytdlp_stop_does_not_open_chrome(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch(
+                "app.core.collect._collect_ytdlp",
+                side_effect=StopRequested("Cancelled."),
+            ):
+                with patch("app.core.collect.scrape_reel_urls") as scrape:
+                    with self.assertRaises(StopRequested):
+                        collect_entries(
+                            "jireel",
+                            "https://www.facebook.com/jireel/reels",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+                    scrape.assert_not_called()
+
+    def test_facebook_reels_fill_caption_from_yt_dlp(self):
+        with tempfile.TemporaryDirectory() as folder:
+            csv_path = os.path.join(folder, "jireel.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write("https://www.facebook.com/reel/111\n")
+
+            def fake_detail(ydl_cls, url, opts, should_stop, sleep=None):
+                return {
+                    "webpage_url": url,
+                    "id": "111",
+                    "title": "Facebook",
+                    "description": "Sunset over the river",
+                    "uploader": "Ada",
+                    "extractor_key": "Facebook",
+                }
+
+            with patch("app.core.collect._collect_ytdlp", return_value=[]):
+                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path):
+                    with patch("app.core.collect._extract_detail", side_effect=fake_detail):
+                        _, entries = collect_entries(
+                            "jireel",
+                            "https://www.facebook.com/jireel/reels",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+        self.assertEqual(entries[0]["description"], "Sunset over the river")
+        self.assertEqual(entries[0]["title"], "Facebook")
+
+    def test_instagram_feed_ytdlp_success_skips_scrape(self):
+        listed = [{
+            "url": "https://www.instagram.com/reel/AbC/",
+            "id": "AbC",
+            "title": "A reel",
+            "uploader": "2002chii_",
+            "platform": "instagram",
+            "extractor_key": "Instagram",
+            "webpage_url_domain": "instagram.com",
+        }]
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect._collect_ytdlp", return_value=listed) as ytdlp:
+                with patch("app.core.collect.scrape_reel_urls") as scrape:
+                    _, entries = collect_entries(
+                        "ig",
+                        "https://www.instagram.com/2002chii_/reels/?hl=en",
+                        output_root=folder,
+                        log=lambda *_: None,
+                    )
+                    scrape.assert_not_called()
+                    ytdlp.assert_called_once()
+                    self.assertEqual(
+                        ytdlp.call_args.args[0],
+                        "https://www.instagram.com/2002chii_/",
+                    )
+                    self.assertEqual(entries[0]["id"], "AbC")
+
+    def test_instagram_feed_ytdlp_fail_calls_scrape(self):
+        with tempfile.TemporaryDirectory() as folder:
+            csv_path = os.path.join(folder, "ig.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write("https://www.instagram.com/reel/AbC/\n")
+            with patch("app.core.collect._collect_ytdlp", side_effect=ValueError("Unable to extract data")):
+                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                    with patch("app.core.collect._extract_detail", return_value=None):
+                        collect_entries(
+                            "ig",
+                            "https://www.instagram.com/2002chii_/",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+            scrape.assert_called_once()
+            self.assertEqual(
+                scrape.call_args.args[1],
+                "https://www.instagram.com/2002chii_/",
+            )
+
+    def test_instagram_feed_ytdlp_empty_calls_scrape(self):
+        with tempfile.TemporaryDirectory() as folder:
+            csv_path = os.path.join(folder, "ig.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write("https://www.instagram.com/p/AbC/\n")
+            with patch("app.core.collect._collect_ytdlp", return_value=[]):
+                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                    with patch("app.core.collect._extract_detail", return_value=None):
+                        collect_entries(
+                            "ig",
+                            "https://www.instagram.com/2002chii_/reels/",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+            scrape.assert_called_once()
+            self.assertEqual(
+                scrape.call_args.args[1],
+                "https://www.instagram.com/2002chii_/reels/",
+            )
+
+    def test_instagram_reposts_does_not_treat_profile_rewrite_as_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            csv_path = os.path.join(folder, "ig.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write("https://www.instagram.com/p/Repost1/\n")
+            with patch(
+                "app.core.collect._collect_ytdlp",
+                return_value=[{
+                    "url": "https://www.instagram.com/p/OwnPost/",
+                    "id": "OwnPost",
+                    "title": "profile mix",
+                    "platform": "instagram",
+                }],
+            ) as ytdlp:
+                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                    with patch("app.core.collect._extract_detail", return_value=None):
+                        _, entries = collect_entries(
+                            "ig",
+                            "https://www.instagram.com/2002chii_/reposts/?hl=en",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+            ytdlp.assert_not_called()
+            scrape.assert_called_once()
+            self.assertEqual(
+                scrape.call_args.args[1],
+                "https://www.instagram.com/2002chii_/reposts/",
+            )
+            self.assertEqual(entries[0]["url"], "https://www.instagram.com/p/Repost1/")
+
+    def test_instagram_ytdlp_stop_does_not_open_chrome(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch(
+                "app.core.collect._collect_ytdlp",
+                side_effect=StopRequested("Cancelled."),
+            ):
+                with patch("app.core.collect.scrape_reel_urls") as scrape:
+                    with self.assertRaises(StopRequested):
+                        collect_entries(
+                            "ig",
+                            "https://www.instagram.com/2002chii_/",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+                    scrape.assert_not_called()
+
+    def test_pinterest_board_feed_yields_image_pin_urls(self):
+        board_id = "585890301462791043"
+        pin_id = "664281013778109217"
+
+        class FakeResp:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=20):
+            url = request.full_url if hasattr(request, "full_url") else request
+            if "BoardResource/get/" in url:
+                return FakeResp(json.dumps({
+                    "resource_response": {"data": {"id": board_id, "name": "cool"}},
+                }).encode())
+            if "BoardFeedResource/get/" in url:
+                return FakeResp(json.dumps({
+                    "resource_response": {
+                        "data": [
+                            {
+                                "type": "pin",
+                                "id": pin_id,
+                                "grid_title": "A cat",
+                                "title": "",
+                                "description": "cute",
+                            },
+                            {"type": "board", "id": "skip-me"},
+                        ],
+                        "bookmark": None,
+                    },
+                }).encode())
+            raise AssertionError(f"unexpected url {url}")
+
+        streamed = []
+
+        class BoomYDL:
+            def __init__(self, opts):
+                raise AssertionError("yt-dlp should not run when the API works")
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.download.urllib.request.urlopen", side_effect=fake_urlopen):
+                _, entries = collect_entries(
+                    "pin",
+                    "https://www.pinterest.com/user/board/",
+                    output_root=folder,
+                    ydl_cls=BoomYDL,
+                    log=lambda *_: None,
+                    on_entries=streamed.extend,
+                )
+        self.assertEqual(entries[0]["url"], f"https://www.pinterest.com/pin/{pin_id}/")
+        self.assertEqual(entries[0]["title"], "A cat")
+        self.assertIsNone(entries[0]["duration"])
+        self.assertEqual(streamed[0]["url"], entries[0]["url"])
 
 
 if __name__ == "__main__":

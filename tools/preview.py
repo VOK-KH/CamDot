@@ -53,6 +53,7 @@ def main():
         if i < 4:
             window.model.set_checked_rows([i], True)
     window.table.selectRow(15)
+    window._toggle_properties(True)
     window._append_log("Downloading 26 reel(s) into output\\jireel")
     window._append_log("4 reel(s) at a time, 8 fragment(s) per reel.")
     window.log.setVisible(True)

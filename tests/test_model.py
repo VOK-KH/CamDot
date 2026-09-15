@@ -1,6 +1,8 @@
 """Tests for the reel table model and its filter (no window needed)."""
 import os
 import unittest
+from datetime import datetime
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -8,19 +10,26 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from app.core.model import (
+    COL_ADDED,
     COL_CHECK,
     COL_ETA,
+    COL_FILE,
+    COL_HOST,
     COL_ID,
     COL_PROGRESS,
     COL_SIZE,
     COL_SPEED,
     COL_STATUS,
     COL_TITLE,
+    COL_URL,
     PERCENT_ROLE,
+    SORT_ROLE,
+    Reel,
     ReelFilterProxy,
     ReelModel,
     format_bytes,
     format_eta,
+    media_kind,
 )
 
 URLS = [
@@ -28,6 +37,38 @@ URLS = [
     "https://www.facebook.com/reel/222",
     "https://www.facebook.com/reel/333",
 ]
+
+
+class MediaKind(unittest.TestCase):
+    def test_twitter_photo_status_is_image(self):
+        self.assertEqual(
+            media_kind(Reel("https://x.com/name/status/2085223295776100697/photo/1")),
+            "image",
+        )
+        self.assertEqual(
+            media_kind(Reel("https://twitter.com/name/status/2085223295776100697/photo/1")),
+            "image",
+        )
+
+    def test_pinterest_pin_without_duration_is_image(self):
+        self.assertEqual(
+            media_kind(Reel("https://www.pinterest.com/pin/664281013778109217/")),
+            "image",
+        )
+        self.assertEqual(
+            media_kind(Reel(
+                "https://www.pinterest.com/pin/664281013778109217/",
+                duration=12,
+            )),
+            "video",
+        )
+        self.assertEqual(
+            media_kind(Reel(
+                "https://www.pinterest.com/pin/1/",
+                filepath=r"C:\dl\pin\video\1.mp4",
+            )),
+            "video",
+        )
 
 
 class Formatting(unittest.TestCase):
@@ -79,6 +120,13 @@ class Model(unittest.TestCase):
         self.assertEqual(self._display(0, COL_TITLE), "Morning coffee ☕")
         self.assertEqual(self._display(0, COL_STATUS), "Queued")
         self.assertIn("Ada", self.model.data(self.model.index(0, COL_TITLE), Qt.ItemDataRole.ToolTipRole))
+
+    def test_add_entries_fills_an_existing_caption(self):
+        added = self.model.add_entries([
+            {"url": URLS[0], "title": "Name on Reels", "description": "Morning coffee"},
+        ])
+        self.assertEqual(added, 0)
+        self.assertEqual(self._display(0, COL_TITLE), "Morning coffee")
 
     def test_info_does_not_wipe_download_speed(self):
         self.model.apply_event(URLS[0], {
@@ -187,6 +235,63 @@ class Model(unittest.TestCase):
         self.assertEqual(self.model.pending_urls(), [URLS[1]])
         self.assertEqual(self._display(0, COL_STATUS), "Done")
         self.assertEqual(self.model.data(self.model.index(1, COL_PROGRESS), PERCENT_ROLE), 40.0)
+
+    def test_header_labels_use_jdownloader_names(self):
+        horizontal = Qt.Orientation.Horizontal
+        role = Qt.ItemDataRole.DisplayRole
+        self.assertEqual(self.model.headerData(COL_TITLE, horizontal, role), "Name")
+        self.assertEqual(self.model.headerData(COL_HOST, horizontal, role), "Hoster")
+        self.assertEqual(self.model.headerData(COL_FILE, horizontal, role), "Save to")
+        self.assertEqual(self.model.headerData(COL_URL, horizontal, role), "Download from")
+        self.assertEqual(self.model.headerData(COL_ADDED, horizontal, role), "Added")
+
+    def test_add_entries_prepends_and_rebuilds_url_map(self):
+        fresh = "https://www.facebook.com/reel/000"
+        added = self.model.add_entries([{"url": fresh, "title": "First"}], prepend=True)
+        self.assertEqual(added, 1)
+        self.assertEqual(self.model.urls()[0], fresh)
+        self.assertEqual(self._display(0, COL_TITLE), "First")
+        self.model.apply_event(fresh, {"status": "done"})
+        self.assertEqual(self.model.counts()["done"], 1)
+        self.assertEqual(self.model.status_at(0), "done")
+
+    def test_comment_and_added_at_persist_through_entries(self):
+        stamped = 1_700_000_000.0
+        self.model.set_urls([{
+            "url": URLS[0],
+            "comment": "keep this",
+            "added_at": stamped,
+        }])
+        self.assertEqual(self.model.reel_at(0).comment, "keep this")
+        self.assertEqual(self.model.reel_at(0).added_at, stamped)
+        entry = self.model.entries()[0]
+        self.assertEqual(entry["comment"], "keep this")
+        self.assertEqual(entry["added_at"], stamped)
+        self.model.set_entries([entry])
+        self.assertEqual(self.model.reel_at(0).comment, "keep this")
+        self.assertEqual(self.model.reel_at(0).added_at, stamped)
+        self.assertEqual(self._display(0, COL_ADDED), datetime.fromtimestamp(stamped).strftime("%Y-%m-%d %H:%M:%S"))
+        self.assertEqual(
+            self.model.data(self.model.index(0, COL_ADDED), SORT_ROLE),
+            stamped,
+        )
+
+    def test_new_rows_get_added_at_now(self):
+        with patch("app.core.model.time.time", return_value=1_712_000_000.0):
+            reel = Reel(URLS[0])
+        self.assertEqual(reel.added_at, 1_712_000_000.0)
+
+    def test_update_reel_sets_title_comment_and_filepath(self):
+        changed = []
+        self.model.dataChanged.connect(lambda *_: changed.append(True))
+        self.assertTrue(self.model.update_reel(
+            URLS[0], title="Edited", comment="note", filepath=r"H:\out\clip.mp4",
+        ))
+        self.assertEqual(self.model.reel_at(0).title, "Edited")
+        self.assertEqual(self.model.reel_at(0).comment, "note")
+        self.assertEqual(self.model.reel_at(0).filepath, r"H:\out\clip.mp4")
+        self.assertEqual(self._display(0, COL_TITLE), "Edited")
+        self.assertTrue(changed)
 
 
 class Filtering(unittest.TestCase):

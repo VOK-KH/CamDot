@@ -1,8 +1,9 @@
-"""Persist the table list and download progress next to the files."""
+"""Persist the table list and download progress in AppData (not next to videos)."""
 import json
 import os
 
 from app.core.download import reel_id
+from app.core.runtime import channel_state_dir
 
 LIST_NAME = "list.json"
 ARCHIVE_NAME = ".downloaded.txt"
@@ -10,11 +11,11 @@ SKIP_SUFFIXES = (".part", ".ytdl", ".json", ".txt")
 
 
 def list_path(output_root, channel):
-    return os.path.join(output_root, channel, LIST_NAME)
+    return os.path.join(channel_state_dir(channel), LIST_NAME)
 
 
 def archive_path(output_root, channel):
-    return os.path.join(output_root, channel, ARCHIVE_NAME)
+    return os.path.join(channel_state_dir(channel), ARCHIVE_NAME)
 
 
 def freeze_status(status):
@@ -129,9 +130,9 @@ def forget_archive_ids(path, rids):
         f.writelines(keep)
 
 
-def reconcile_entries(entries, output_dir):
+def reconcile_entries(entries, output_dir, archive_file=None):
     """Mark finished files done and keep percent for leftover .part files."""
-    archive = read_archive_ids(os.path.join(output_dir, ARCHIVE_NAME))
+    archive = read_archive_ids(archive_file or os.path.join(output_dir, ARCHIVE_NAME))
     reconciled = []
     for entry in entries:
         item = dict(entry)

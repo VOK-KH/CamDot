@@ -28,11 +28,18 @@ def derive_channel(source, preferred=""):
         query = parse_qs(parts.query)
         if query.get("v"):
             raw = query["v"][0]
+        elif query.get("modal_id"):
+            raw = query["modal_id"][0]
         elif query.get("id"):
             raw = query["id"][0]
         elif segments:
             head = segments[0]
-            if head.lower() in ("people", "reel", "reels", "watch", "p", "tv", "videos", "shorts"):
+            if head.lower() in (
+                "people", "reel", "reels", "watch", "p", "tv", "videos", "shorts",
+                "video", "play", "en", "id", "th", "vi", "ms",
+            ):
+                raw = segments[-1]
+            elif len(segments) >= 2 and segments[1].lower() in ("video", "play"):
                 raw = segments[-1]
             else:
                 raw = head.lstrip("@")

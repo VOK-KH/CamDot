@@ -175,6 +175,25 @@ ICONS = {
     "platform-x": (
         '<path d="M4 4l7.2 8.2L4.6 20h3l5.2-6.1L17.8 20H20l-7.5-8.6L19.2 4h-3l-4.8 5.6L6.4 4z"/>'
     ),
+    "platform-bilibili": (
+        '<path d="M7 7L5 4"/><path d="M17 7L19 4"/>'
+        '<rect x="4" y="7" width="16" height="12" rx="2"/>'
+        '<polygon points="10 11 15 13.5 10 16" fill="currentColor"/>'
+    ),
+    "platform-douyin": (
+        '<path d="M9 4v11a3.5 3.5 0 1 1-3.5-3.5"/>'
+        '<path d="M9 8c2 1.6 4.2 2.4 6.5 2.5"/>'
+        '<circle cx="17.5" cy="6.5" r="1.5"/>'
+    ),
+    "platform-kuaishou": (
+        '<rect x="4" y="4" width="16" height="16" rx="4"/>'
+        '<polygon points="10 8 16 12 10 16" fill="currentColor"/>'
+    ),
+    "platform-pinterest": (
+        '<circle cx="12" cy="12" r="9"/>'
+        '<path d="M12 7v7"/><circle cx="12" cy="8.5" r="0.5" fill="currentColor"/>'
+        '<path d="M10 17c1-3 2-4 2-6"/>'
+    ),
     "platform-generic": (
         '<rect x="3" y="5" width="18" height="14" rx="2"/>'
         '<polygon points="10 9 16 12 10 15" fill="currentColor"/>'

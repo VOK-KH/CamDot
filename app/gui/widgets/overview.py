@@ -14,14 +14,18 @@ class OverviewPanel(QWidget):
     """A title line plus two rows of readings, filled column by column."""
 
     ROWS = 2
+    MIN_HEIGHT = 56
+    MAX_HEIGHT = 104
     close_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("overviewPanel")
+        self.setMinimumHeight(self.MIN_HEIGHT)
+        self.setMaximumHeight(self.MAX_HEIGHT)
         column = QVBoxLayout(self)
-        column.setContentsMargins(8, 3, 4, 4)
-        column.setSpacing(2)
+        column.setContentsMargins(6, 2, 4, 2)
+        column.setSpacing(1)
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
@@ -44,8 +48,8 @@ class OverviewPanel(QWidget):
 
         self.grid = QGridLayout()
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(8)
-        self.grid.setVerticalSpacing(1)
+        self.grid.setHorizontalSpacing(6)
+        self.grid.setVerticalSpacing(0)
         column.addLayout(self.grid)
         self._values = {}
 
@@ -70,7 +74,7 @@ class OverviewPanel(QWidget):
                 widget.deleteLater()
         self._values = {}
         # A value that grows must not shove its neighbours sideways every tick.
-        width = self.fontMetrics().horizontalAdvance("8888.8 MB/s")
+        width = self.fontMetrics().horizontalAdvance("888.8 MB/s")
         for index, name in enumerate(names):
             row, cell = index % self.ROWS, index // self.ROWS
             label = QLabel(f"{name}:")

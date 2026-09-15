@@ -1,6 +1,8 @@
 """The table model behind the reel list, plus its status/text filter."""
 import os
+import time
 from collections import Counter
+from datetime import datetime
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
@@ -11,13 +13,13 @@ from app.core.download import post_label, reel_id
 from app.core.urls import detect_platform
 
 COLUMNS = (
-    "#", "", "Host", "Status", "Progress", "Title", "Uploader", "ID", "Size",
-    "Duration", "Speed", "ETA", "File", "URL",
+    "#", "", "Hoster", "Status", "Progress", "Name", "Uploader", "ID", "Size",
+    "Duration", "Speed", "ETA", "Save to", "Download from", "Added",
 )
 (
     COL_INDEX, COL_CHECK, COL_HOST, COL_STATUS, COL_PROGRESS, COL_TITLE, COL_UPLOADER,
-    COL_ID, COL_SIZE, COL_DURATION, COL_SPEED, COL_ETA, COL_FILE, COL_URL,
-) = range(14)
+    COL_ID, COL_SIZE, COL_DURATION, COL_SPEED, COL_ETA, COL_FILE, COL_URL, COL_ADDED,
+) = range(15)
 
 STATUSES = ("queued", "downloading", "done", "failed", "cancelled")
 STATUS_LABELS = {
@@ -78,6 +80,32 @@ def format_eta(seconds):
     return f"{seconds // 60:d}:{seconds % 60:02d}"
 
 
+def parse_added_at(value):
+    """Unix timestamp from a float, numeric string, or ISO datetime."""
+    if value in (None, ""):
+        return time.time()
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return time.time()
+
+
+def format_added(value):
+    if value in (None, ""):
+        return "-"
+    try:
+        return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "-"
+
+
 def host_label(reel):
     """The domain shown next to the host logo, e.g. "tiktok.com"."""
     host = reel.webpage_url_domain or (urlparse(reel.url).hostname or "")
@@ -94,6 +122,11 @@ def media_kind(reel):
         return "music"
     url = (reel.url or "").lower()
     host = host_label(reel)
+    if "pinterest." in host or host == "pin.it":
+        if reel.duration or ext in {".mp4", ".webm", ".mkv", ".mov"}:
+            return "video"
+        if "/pin/" in url:
+            return "image"
     if "music.youtube" in host or "soundcloud" in host or "/audio" in url:
         return "music"
     if any(token in url for token in ("/photo", "/photos", "/p/", "/img")):
@@ -126,6 +159,7 @@ class Reel:
         "url", "rid", "status", "percent", "total", "speed", "eta",
         "title", "description", "uploader", "duration", "filepath", "checked",
         "platform", "extractor_key", "webpage_url_domain",
+        "comment", "added_at",
     )
 
     def __init__(self, url, **meta):
@@ -153,6 +187,8 @@ class Reel:
         self.platform = meta.get("platform") or detect_platform(url)
         self.extractor_key = meta.get("extractor_key") or ""
         self.webpage_url_domain = meta.get("webpage_url_domain") or ""
+        self.comment = meta.get("comment") or ""
+        self.added_at = parse_added_at(meta.get("added_at"))
 
     def as_entry(self):
         return {
@@ -169,6 +205,8 @@ class Reel:
             "platform": self.platform,
             "extractor_key": self.extractor_key,
             "webpage_url_domain": self.webpage_url_domain,
+            "comment": self.comment,
+            "added_at": self.added_at,
         }
 
 
@@ -235,6 +273,8 @@ class ReelModel(QAbstractTableModel):
                 return os.path.basename(reel.filepath) if reel.filepath else "-"
             if column == COL_URL:
                 return reel.url
+            if column == COL_ADDED:
+                return format_added(reel.added_at)
             return None
 
         if role == PERCENT_ROLE and column == COL_PROGRESS:
@@ -273,6 +313,8 @@ class ReelModel(QAbstractTableModel):
                 return reel.speed or 0
             if column == COL_ETA:
                 return reel.eta if reel.eta is not None else 1 << 30
+            if column == COL_ADDED:
+                return reel.added_at or 0
             return str(self.data(index, Qt.ItemDataRole.DisplayRole) or "").lower()
         return None
 
@@ -321,28 +363,74 @@ class ReelModel(QAbstractTableModel):
         self._counts = Counter(reel.status for reel in self._reels)
         self.endResetModel()
 
-    def add_entries(self, entries):
-        """Append new entries while preserving existing rows and status."""
+    def add_entries(self, entries, prepend=False):
+        """Append (or prepend) new entries; fill title/caption on listed rows."""
         additions = []
         seen = set(self._row_by_url)
+        last = len(COLUMNS) - 1
         for entry in entries:
             data = dict(entry) if isinstance(entry, dict) else {"url": entry}
             url = data.pop("url", "")
-            if url and url not in seen:
+            if not url:
+                continue
+            if url in self._row_by_url:
+                row = self._row_by_url[url]
+                reel = self._reels[row]
+                changed = False
+                for field in ("title", "description", "uploader", "comment"):
+                    value = data.get(field)
+                    if value and not getattr(reel, field):
+                        setattr(reel, field, value)
+                        changed = True
+                if data.get("duration") is not None and not reel.duration:
+                    reel.duration = data["duration"]
+                    changed = True
+                if changed:
+                    self.dataChanged.emit(
+                        self.index(row, COL_HOST), self.index(row, last),
+                    )
+                continue
+            if url not in seen:
                 seen.add(url)
                 additions.append(Reel(url, **data))
         if not additions:
             return 0
-        first = len(self._reels)
-        self.beginInsertRows(QModelIndex(), first, first + len(additions) - 1)
-        self._reels.extend(additions)
-        self._row_by_url.update(
-            (reel.url, row) for row, reel in enumerate(self._reels[first:], first)
-        )
+        if prepend:
+            self.beginInsertRows(QModelIndex(), 0, len(additions) - 1)
+            self._reels = additions + self._reels
+            self._row_by_url = {reel.url: row for row, reel in enumerate(self._reels)}
+        else:
+            first = len(self._reels)
+            self.beginInsertRows(QModelIndex(), first, first + len(additions) - 1)
+            self._reels.extend(additions)
+            self._row_by_url.update(
+                (reel.url, row) for row, reel in enumerate(self._reels[first:], first)
+            )
         for reel in additions:
             self._counts[reel.status] += 1
         self.endInsertRows()
         return len(additions)
+
+    def update_reel(self, url, **fields):
+        """Patch title, comment, or filepath for the properties panel."""
+        row = self._row_by_url.get(url)
+        if row is None:
+            return False
+        reel = self._reels[row]
+        changed = False
+        for field in ("title", "comment", "filepath"):
+            if field not in fields:
+                continue
+            value = fields[field]
+            if value is None:
+                continue
+            setattr(reel, field, value)
+            changed = True
+        if changed:
+            self.dataChanged.emit(
+                self.index(row, COL_HOST), self.index(row, len(COLUMNS) - 1),
+            )
+        return changed
 
     def entries(self):
         return [reel.as_entry() for reel in self._reels]
@@ -516,7 +604,7 @@ class ReelModel(QAbstractTableModel):
             reel.speed = None
             reel.eta = None
 
-        self.dataChanged.emit(self.index(row, COL_HOST), self.index(row, COL_URL))
+        self.dataChanged.emit(self.index(row, COL_HOST), self.index(row, len(COLUMNS) - 1))
         return True
 
 

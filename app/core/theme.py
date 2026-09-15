@@ -150,6 +150,9 @@ QWidget#overviewPanel { background: #eef2f7; border: 0; border-top: 1px solid #d
 QLabel#overviewTitle { color: #3a3d42; font-size: 11px; font-weight: 700; }
 QWidget#overviewPanel QLabel#overviewName { color: #6b7078; font-size: 11px; }
 QWidget#overviewPanel QLabel#overviewValue { color: #1c1e21; font-size: 11px; font-weight: 600; }
+QWidget#propertiesPanel { background: #eef2f7; border: 0; border-top: 1px solid #dcdfe3; }
+QLabel#propertiesTitle { color: #3a3d42; font-size: 11px; font-weight: 700; }
+QWidget#propertiesPanel QLineEdit { min-height: 18px; padding: 1px 5px; font-size: 11px; }
 QToolButton#overviewClose {
     background: transparent;
     border: 0;
@@ -174,7 +177,6 @@ QWidget#actionBar QToolButton:hover { background: #d4d7dc; }
 QWidget#actionBar QToolButton:checked { background: #cfe0fb; }
 QWidget#actionBar QToolButton:!enabled { color: #9aa0a6; }
 QWidget#actionBar QComboBox { background: #ffffff; }
-QLineEdit#filterEdit { background: #ffffff; min-width: 120px; }
 QLineEdit#savePathEdit { background: #ffffff; min-width: 140px; }
 
 QSplitter#mainSplit::handle, QSplitter#workSplit::handle {
@@ -336,6 +338,9 @@ QWidget#overviewPanel { background: #151d28; border: 0; border-top: 1px solid #2
 QLabel#overviewTitle { color: #c5d0dc; font-size: 11px; font-weight: 700; }
 QWidget#overviewPanel QLabel#overviewName { color: #8c98a8; font-size: 11px; }
 QWidget#overviewPanel QLabel#overviewValue { color: #e7ecf3; font-size: 11px; font-weight: 600; }
+QWidget#propertiesPanel { background: #151d28; border: 0; border-top: 1px solid #26303d; }
+QLabel#propertiesTitle { color: #c5d0dc; font-size: 11px; font-weight: 700; }
+QWidget#propertiesPanel QLineEdit { min-height: 18px; padding: 1px 5px; font-size: 11px; }
 QToolButton#overviewClose {
     background: transparent;
     border: 0;
@@ -360,7 +365,6 @@ QWidget#actionBar QToolButton:hover { background: #243044; }
 QWidget#actionBar QToolButton:checked { background: #1f4f99; }
 QWidget#actionBar QToolButton:!enabled { color: #6b7785; }
 QWidget#actionBar QComboBox { background: #1a2230; }
-QLineEdit#filterEdit { background: #1a2230; min-width: 120px; }
 QLineEdit#savePathEdit { background: #1a2230; min-width: 140px; }
 
 QSplitter#mainSplit::handle, QSplitter#workSplit::handle {

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from PySide6.QtGui import QIcon, QPixmap
 
 from app.core import icons
+from app.core.runtime import util_cache_dir
 
 PLATFORM_KEYS = {
     "facebook": "platform-facebook",
@@ -15,6 +16,10 @@ PLATFORM_KEYS = {
     "youtube": "platform-youtube",
     "tiktok": "platform-tiktok",
     "twitter": "platform-x",
+    "bilibili": "platform-bilibili",
+    "douyin": "platform-douyin",
+    "kuaishou": "platform-kuaishou",
+    "pinterest": "platform-pinterest",
 }
 
 FAVICON_HOST = "icons.duckduckgo.com"
@@ -23,6 +28,8 @@ FAVICON_MAX_BYTES = 100_000
 
 def platform_from_extractor(extractor_key="", domain=""):
     key = (extractor_key or "").lower()
+    if "bili" in key:
+        return "bilibili"
     for name in PLATFORM_KEYS:
         if name in key:
             return name
@@ -37,6 +44,14 @@ def platform_from_extractor(extractor_key="", domain=""):
         return "youtube"
     if host in ("x.com", "twitter.com", "t.co") or host.endswith(".x.com"):
         return "twitter"
+    if "bilibili." in host or host in ("b23.tv", "bilibili.tv") or host.endswith(".b23.tv"):
+        return "bilibili"
+    if "douyin." in host or "iesdouyin." in host:
+        return "douyin"
+    if "kuaishou." in host or "gifshow." in host or host.endswith("kwai.com"):
+        return "kuaishou"
+    if "pinterest." in host or host == "pin.it":
+        return "pinterest"
     return ""
 
 
@@ -48,7 +63,7 @@ def _safe_domain(domain):
 
 
 def cache_dir(output_root="output"):
-    return os.path.join(output_root, ".cache", "favicons")
+    return os.path.join(util_cache_dir(), "favicons")
 
 
 def fetch_favicon(domain, dest_dir, opener=None):
@@ -88,11 +103,11 @@ def _file_icon(path, size=16):
 def icon_for(platform="", domain="", extractor_key="", output_root="output", fetch=False, color="#e7ecf3"):
     """Return a QIcon for the host. Known platforms use bundled SVGs."""
     name = platform or platform_from_extractor(extractor_key, domain)
-    bundled = PLATFORM_KEYS.get(name, "platform-generic")
-    try:
-        return icons.icon(bundled, color, 16)
-    except OSError:
-        pass
+    if name in PLATFORM_KEYS:
+        try:
+            return icons.icon(PLATFORM_KEYS[name], color, 16)
+        except OSError:
+            pass
     if fetch and domain and name not in PLATFORM_KEYS:
         path = fetch_favicon(domain, cache_dir(output_root))
         if path:

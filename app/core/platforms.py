@@ -1,0 +1,238 @@
+"""First-class and coming-soon host catalog (no widgets)."""
+
+ACTIVE = "active"
+COMING_SOON = "coming_soon"
+
+PLATFORM_CATALOG = [
+    {
+        "id": "facebook",
+        "name": "Facebook",
+        "hosts": ("facebook.com", "fb.com"),
+        "status": ACTIVE,
+        "icon": "platform-facebook",
+        "features": [
+            "Single posts, reels, videos, and photos",
+            "Page /reels and profiles: yt-dlp first, then Chrome login if needed",
+            "Views: video, extract audio, and thumbnail",
+            "Cookies from browser",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "instagram",
+        "name": "Instagram",
+        "hosts": ("instagram.com",),
+        "status": ACTIVE,
+        "icon": "platform-instagram",
+        "features": [
+            "Posts, reels, TV, and stories URLs",
+            "Profile, /username/reels, and /username/reposts as feeds (yt-dlp then Chrome)",
+            "Reposts skip the yt-dlp rewrite and open Chrome",
+            "Cookies recommended",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "tiktok",
+        "name": "TikTok",
+        "hosts": ("tiktok.com",),
+        "status": ACTIVE,
+        "icon": "platform-tiktok",
+        "features": [
+            "Videos and creator profiles",
+            "tiktokuser:<sec_uid> when a profile extract fails",
+            "Optional age filter in Settings",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "youtube",
+        "name": "YouTube",
+        "hosts": ("youtube.com", "youtu.be"),
+        "status": ACTIVE,
+        "icon": "platform-youtube",
+        "features": [
+            "Videos, Shorts, channels, playlists, and mixes",
+            "A watch+list link asks for this video or the whole playlist",
+            "Link Grabber takes the single video",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "twitter",
+        "name": "X / Twitter",
+        "hosts": ("x.com", "twitter.com"),
+        "status": ACTIVE,
+        "icon": "platform-x",
+        "features": [
+            "Posts and profile timelines",
+            "Video tweets via yt-dlp",
+            "Photo tweets download images (fxtwitter fallback)",
+            "Views: Video / Image",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "bilibili",
+        "name": "Bilibili",
+        "hosts": ("bilibili.tv", "bilibili.com", "b23.tv"),
+        "status": ACTIVE,
+        "icon": "platform-bilibili",
+        "features": [
+            "Videos on bilibili.tv, bilibili.com, and b23.tv",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "douyin",
+        "name": "Douyin",
+        "hosts": ("douyin.com", "iesdouyin.com"),
+        "status": ACTIVE,
+        "icon": "platform-douyin",
+        "features": [
+            "Videos, jingxuan links with modal_id, and profiles / douyinuser:",
+            "Auto Chrome cookies",
+        ],
+        "limits": [
+            "Feeds without a video id are not supported",
+        ],
+    },
+    {
+        "id": "kuaishou",
+        "name": "Kuaishou",
+        "hosts": ("kuaishou.com", "gifshow.com", "kwai.com"),
+        "status": ACTIVE,
+        "icon": "platform-kuaishou",
+        "features": [
+            "Videos",
+            "Paste Cookie or cURL in Settings → Tools",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "pinterest",
+        "name": "Pinterest",
+        "hosts": ("pinterest.com", "pin.it"),
+        "status": ACTIVE,
+        "icon": "platform-pinterest",
+        "features": [
+            "Pins, boards, and profiles/sections",
+            "Orig image when the pin has no video",
+            "Video pins download as video",
+        ],
+        "limits": [],
+    },
+    {
+        "id": "generic",
+        "name": "Other HTTPS",
+        "hosts": ("any other http(s) host",),
+        "status": ACTIVE,
+        "icon": "platform-generic",
+        "features": [
+            "Any other http(s) host is sent to yt-dlp",
+            "Success depends on the extractor",
+        ],
+        "limits": [
+            "No dedicated host polish",
+        ],
+    },
+    {
+        "id": "threads",
+        "name": "Threads",
+        "hosts": ("threads.net",),
+        "status": COMING_SOON,
+        "icon": "platform-generic",
+        "features": [
+            "First-class branded support is planned",
+            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+        ],
+        "limits": [
+            "No dedicated collect or download path yet",
+        ],
+    },
+    {
+        "id": "reddit",
+        "name": "Reddit",
+        "hosts": ("reddit.com",),
+        "status": COMING_SOON,
+        "icon": "platform-generic",
+        "features": [
+            "First-class branded support is planned",
+            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+        ],
+        "limits": [
+            "No dedicated collect or download path yet",
+        ],
+    },
+    {
+        "id": "snapchat",
+        "name": "Snapchat",
+        "hosts": ("snapchat.com",),
+        "status": COMING_SOON,
+        "icon": "platform-generic",
+        "features": [
+            "First-class branded support is planned",
+            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+        ],
+        "limits": [
+            "No dedicated collect or download path yet",
+        ],
+    },
+    {
+        "id": "xiaohongshu",
+        "name": "Xiaohongshu (RED)",
+        "hosts": ("xiaohongshu.com", "xhslink.com"),
+        "status": COMING_SOON,
+        "icon": "platform-generic",
+        "features": [
+            "First-class branded support is planned",
+            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+        ],
+        "limits": [
+            "No dedicated collect or download path yet",
+        ],
+    },
+    {
+        "id": "weibo",
+        "name": "Weibo",
+        "hosts": ("weibo.com",),
+        "status": COMING_SOON,
+        "icon": "platform-generic",
+        "features": [
+            "First-class branded support is planned",
+            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+        ],
+        "limits": [
+            "No dedicated collect or download path yet",
+        ],
+    },
+    {
+        "id": "twitch",
+        "name": "Twitch",
+        "hosts": ("twitch.tv",),
+        "status": COMING_SOON,
+        "icon": "platform-generic",
+        "features": [
+            "First-class branded support is planned",
+            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+        ],
+        "limits": [
+            "No dedicated collect or download path yet",
+        ],
+    },
+]
+
+
+def active_platforms():
+    return [entry for entry in PLATFORM_CATALOG if entry["status"] == ACTIVE]
+
+
+def coming_soon_platforms():
+    return [entry for entry in PLATFORM_CATALOG if entry["status"] == COMING_SOON]
+
+
+def platform_by_id(platform_id):
+    for entry in PLATFORM_CATALOG:
+        if entry["id"] == platform_id:
+            return entry
+    return None
