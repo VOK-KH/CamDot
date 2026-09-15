@@ -299,7 +299,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_toolbar(self):
-        """Icon strip under the menu, JDownloader-style job and list actions."""
+        """Icon strip under the menu for job and list actions."""
         bar = QWidget()
         bar.setObjectName("toolBar")
         row = QHBoxLayout(bar)
@@ -980,7 +980,7 @@ class MainWindow(QMainWindow):
         chunks = QSpinBox()
         chunks.setRange(1, 32)
         chunks.setValue(int(get("fragments", DEFAULT_FRAGMENTS)))
-        chunks.setToolTip("Max chunks per download (yt-dlp -N)")
+        chunks.setToolTip("Max chunks per download")
         chunks.valueChanged.connect(lambda value: self._settings.setValue("fragments", value))
         self._add_menu_labeled_widget(menu, "Max chunks per download", chunks)
 
@@ -1347,7 +1347,7 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _check_tool_updates(self):
-        self._append_log("Checking yt-dlp and FFmpeg for updates…")
+        self._append_log("Checking download tools for updates…")
         threading.Thread(target=self._run_tool_update, daemon=True).start()
 
     def _check_app_updates(self):
@@ -1373,7 +1373,7 @@ class MainWindow(QMainWindow):
         ok = update_runtime(force=True)
         versions = runtime_versions()
         self.tools_checked.emit(
-            f"yt-dlp {versions['yt_dlp'] or 'missing'} · "
+            f"Engine {versions['yt_dlp'] or 'missing'} · "
             f"FFmpeg {'ready' if versions['ffmpeg'] else 'missing'}"
             + ("" if ok else " (update could not run)")
         )
@@ -1387,7 +1387,7 @@ class MainWindow(QMainWindow):
             self,
             f"About {APP_NAME}",
             f"{APP_NAME} {__version__}\n\n"
-            f"yt-dlp {versions['yt_dlp'] or 'missing'}\n"
+            f"Engine: {versions['yt_dlp'] or 'missing'}\n"
             f"FFmpeg: {versions['ffmpeg'] or 'missing'}\n"
             f"Downloads: {self._output_root()}",
         )

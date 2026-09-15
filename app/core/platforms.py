@@ -12,7 +12,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-facebook",
         "features": [
             "Single posts, reels, videos, and photos",
-            "Page /reels and profiles: yt-dlp first, then Chrome login if needed",
+            "Page /reels and profiles: fast listing first, then Chrome login if needed",
             "Views: video, extract audio, and thumbnail",
             "Cookies from browser",
         ],
@@ -26,8 +26,8 @@ PLATFORM_CATALOG = [
         "icon": "platform-instagram",
         "features": [
             "Posts, reels, TV, and stories URLs",
-            "Profile, /username/reels, and /username/reposts as feeds (yt-dlp then Chrome)",
-            "Reposts skip the yt-dlp rewrite and open Chrome",
+            "Profile, /username/reels, and /username/reposts as feeds",
+            "Reposts open Chrome when fast listing is not enough",
             "Cookies recommended",
         ],
         "limits": [],
@@ -66,7 +66,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-x",
         "features": [
             "Posts and profile timelines",
-            "Video tweets via yt-dlp",
+            "Video tweets download directly",
             "Photo tweets download images (fxtwitter fallback)",
             "Views: Video / Image",
         ],
@@ -129,8 +129,8 @@ PLATFORM_CATALOG = [
         "status": ACTIVE,
         "icon": "platform-generic",
         "features": [
-            "Any other http(s) host is sent to yt-dlp",
-            "Success depends on the extractor",
+            "Any other http(s) link CamDot can recognize",
+            "Success depends on the host",
         ],
         "limits": [
             "No dedicated host polish",
@@ -144,7 +144,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-generic",
         "features": [
             "First-class branded support is planned",
-            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+            "Links may already work through Other HTTPS when supported",
         ],
         "limits": [
             "No dedicated collect or download path yet",
@@ -158,7 +158,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-generic",
         "features": [
             "First-class branded support is planned",
-            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+            "Links may already work through Other HTTPS when supported",
         ],
         "limits": [
             "No dedicated collect or download path yet",
@@ -172,7 +172,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-generic",
         "features": [
             "First-class branded support is planned",
-            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+            "Links may already work through Other HTTPS when supported",
         ],
         "limits": [
             "No dedicated collect or download path yet",
@@ -186,7 +186,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-generic",
         "features": [
             "First-class branded support is planned",
-            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+            "Links may already work through Other HTTPS when supported",
         ],
         "limits": [
             "No dedicated collect or download path yet",
@@ -200,7 +200,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-generic",
         "features": [
             "First-class branded support is planned",
-            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+            "Links may already work through Other HTTPS when supported",
         ],
         "limits": [
             "No dedicated collect or download path yet",
@@ -214,7 +214,7 @@ PLATFORM_CATALOG = [
         "icon": "platform-generic",
         "features": [
             "First-class branded support is planned",
-            "Links may already go through Other HTTPS / yt-dlp if an extractor exists",
+            "Links may already work through Other HTTPS when supported",
         ],
         "limits": [
             "No dedicated collect or download path yet",

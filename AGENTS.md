@@ -1,6 +1,6 @@
 # CamDot
 
-Python download manager (PySide6 GUI + yt-dlp/selenium). Package lives in `app/`. Tests: `uv run python -m unittest discover -s tests -v`. GUI entry: `uv run camdot`.
+Python download manager (PySide6 GUI + collect/download pipeline). Package lives in `app/`. Tests: `uv run python -m unittest discover -s tests -v`. GUI entry: `uv run camdot`.
 
 ## Agent org
 

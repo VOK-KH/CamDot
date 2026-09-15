@@ -1,4 +1,4 @@
-"""Desktop Link Grabber monitor, a JDownloader-style tool window."""
+"""Desktop Link Grabber monitor as a floating tool window."""
 from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -19,7 +19,7 @@ class GrabberPanel(QFrame):
     """Readings for the background grab, as a free-floating desktop popup.
 
     The main window owns the numbers and pushes them in; this window can sit
-    anywhere on the screen, including outside the app, like JDownloader.
+    anywhere on the screen, including outside the app.
     """
 
     FIELDS = (

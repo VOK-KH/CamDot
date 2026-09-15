@@ -42,7 +42,7 @@ class _FaviconBridge(QObject):
 
 
 class ViewsPanel(QFrame):
-    """JDownloader-style views: Video / Music / Image, then hosts from the list.
+    """Views panel: Video / Music / Image, then hosts from the list.
 
     There is no hide control — the strip stays beside the tables.
     """

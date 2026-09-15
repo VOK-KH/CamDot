@@ -94,7 +94,7 @@ class SettingsDialog(QDialog):
         self.filename = QLineEdit()
         self.filename.setPlaceholderText(OUTPUT_TEMPLATE)
         self.filename.setToolTip(
-            "yt-dlp file name inside the download folder. "
+            "File name inside the download folder. "
             "Default uses the caption or title, then the id."
         )
         self.workers = QSpinBox()
@@ -110,11 +110,11 @@ class SettingsDialog(QDialog):
         self.close_to_tray.setToolTip(
             "Close and minimise hide the window; clipboard grab and downloads continue."
         )
-        self.auto_update = QCheckBox("Automatically update yt-dlp and FFmpeg daily")
+        self.auto_update = QCheckBox("Automatically update download tools daily")
         self.speed_limit_on = QCheckBox("Speed limit")
         self.speed_limit = QLineEdit()
         self.speed_limit.setPlaceholderText("50K")
-        self.speed_limit.setToolTip("yt-dlp --limit-rate, e.g. 50K or 2M")
+        self.speed_limit.setToolTip("Optional speed cap, e.g. 50K or 2M")
         speed_row = QWidget()
         speed_layout = QHBoxLayout(speed_row)
         speed_layout.setContentsMargins(0, 0, 0, 0)

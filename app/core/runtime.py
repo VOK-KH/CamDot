@@ -273,7 +273,7 @@ def setup_main():
     """Console setup command for explicit install/update diagnostics."""
     ok = update_runtime(force=True)
     versions = runtime_versions()
-    print(f"yt-dlp: {versions['yt_dlp'] or 'missing'}")
+    print(f"Engine: {versions['yt_dlp'] or 'missing'}")
     print(f"FFmpeg: {versions['ffmpeg'] or 'missing'}")
     print("Runtime tools are ready." if ok and all(versions.values()) else "Runtime setup incomplete.")
     return 0 if ok and all(versions.values()) else 1

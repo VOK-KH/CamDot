@@ -3,12 +3,12 @@
 </p>
 <h1 align="center">CamDot</h1>
 <p align="center">
-  A cross-platform download manager for Facebook, Instagram, TikTok, YouTube, X, and more — PySide6 GUI + yt-dlp + Selenium
+  A cross-platform download manager for social feeds, channels, and direct links
 </p>
 
 <p align="center">
   <a style="text-decoration:none">
-    <img src="https://img.shields.io/badge/Python-3.12-blue.svg?color=00B16A" alt="Python 3.12"/>
+    <img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg?color=00B16A" alt="Python 3.10+"/>
   </a>
   <a style="text-decoration:none">
     <img src="https://img.shields.io/badge/PySide6-6-blue?color=00B16A" alt="PySide6"/>
@@ -29,17 +29,47 @@
 
 ![CamDot preview](preview.png)
 
+## Download
+
+Pre-built packages are published on [GitHub Releases](https://github.com/VOK-KH/CamDot/releases).
+
+| Platform | File |
+|---|---|
+| Windows x86_64 | `CamDot-v{version}-Windows-x86_64.exe` |
+| Linux x86_64 / arm64 | `CamDot-v{version}-Linux-{arch}.tar.gz` |
+| macOS arm64 / x86_64 | `CamDot-v{version}-macOS-{arch}.dmg` |
+
+The app checks for updates on startup and from **Tools → Check for app updates**.
+
 ## Features
 
-* JDownloader-style **Grabber** and **Download** tabs with clipboard monitoring
-* Collect feeds and posts from **Facebook, Instagram, TikTok, YouTube, X**, Bilibili, Douyin, Pinterest, and more
-* **yt-dlp** downloads with resume, parallel workers, and optional speed limits
-* **Selenium** fallback when a site needs a logged-in browser session
+* **Grabber** and **Download** tabs with optional clipboard monitoring
+* Collect feeds and posts, then download in parallel with resume support
 * Filter by **Video / Music / Image** and host; package or link properties panel
+* Browser login when a site needs an authenticated session
+* Optional download speed limit and custom output naming
 * System **tray** support — downloads keep running when the window is hidden
-* **Auto-update** check for new app releases from GitHub
+* **Supported sites** overview in the app (**Help → Supported sites**)
 
-## Quick start
+## Supported sites
+
+| Site | Status |
+|---|---|
+| Facebook | Supported |
+| Instagram | Supported |
+| TikTok | Supported |
+| YouTube | Supported |
+| X (Twitter) | Supported |
+| Bilibili | Supported |
+| Douyin | Supported |
+| Kuaishou | Supported |
+| Pinterest | Supported |
+| Other HTTPS links | Supported when recognized |
+| Threads, Reddit, Snapchat, Xiaohongshu, Weibo, Twitch | Planned |
+
+Some hosts need cookies or a logged-in Chrome session for feeds and private content. Use **Settings → Tools** to paste cookies or a copied cURL command when prompted.
+
+## Quick start (from source)
 
 1. Clone and install with [uv](https://docs.astral.sh/uv/):
 
@@ -58,7 +88,7 @@
     uv run camdot-gui
     ```
 
-3. Optional — verify bundled tools (yt-dlp, FFmpeg):
+3. Optional — verify bundled download tools:
 
     ```shell
     uv run camdot-setup
@@ -70,16 +100,31 @@
 2. Review titles and host icons in the table.
 3. Click **Start all Downloads** (or download checked rows only).
 
-**Grabber On** watches the clipboard like JDownloader's LinkGrabber — copy supported links and they are queued for metadata collection in the background.
+**Grabber On** watches the clipboard — copy supported links and they are queued for metadata collection in the background.
+
+### Settings
+
+Open **Settings** from the menu to configure:
+
+* **Output folder** — where finished files are saved
+* **Filename template** — how titles are turned into file names
+* **Speed limit** — optional cap, e.g. `50K` or `2M`
+* **Close to tray** — keep downloads running when the main window closes
+* **Tools** — cookies, cURL, Chrome profile, and site-specific options
+
+### Data locations
 
 Default download folder:
 
 * Windows / Linux: `Downloads/CamDot/<channel>/`
 * macOS: `Documents/CamDot/<channel>/`
 
-App data (Chrome profile, lists, caches): `%LOCALAPPDATA%/camdot` on Windows.
+App data (Chrome profile, lists, caches):
 
-## Deploy
+* Windows: `%LOCALAPPDATA%\camdot`
+* Linux / macOS: `~/.cache/camdot`
+
+## Build from source
 
 Build a standalone app for the current platform:
 
@@ -88,13 +133,7 @@ uv sync --group dev
 uv run python tools/deploy.py
 ```
 
-Output lands in `dist/`:
-
-| Platform | Artifact |
-|---|---|
-| Windows x86_64 | `CamDot-v{version}-Windows-x86_64.exe` |
-| Linux x86_64 / arm64 | `CamDot-v{version}-Linux-{arch}.tar.gz` |
-| macOS arm64 / x86_64 | `CamDot-v{version}-macOS-{arch}.dmg` |
+Output lands in `dist/` using the same naming as release assets above.
 
 Optional PyArmor obfuscation before packaging:
 
@@ -116,8 +155,6 @@ CI builds run on GitHub Actions. To publish a new version:
 
 3. The **Release** workflow builds all platforms and uploads assets to [GitHub Releases](https://github.com/VOK-KH/CamDot/releases).
 
-The app checks that release page on startup and from **Tools → Check for app updates**.
-
 ## Tests
 
 ```shell
@@ -132,7 +169,6 @@ uv run python tools/preview.py preview.png
 
 ## See also
 
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — media downloader used by CamDot
 - [PySide6](https://doc.qt.io/qtforpython/) — Qt for Python GUI toolkit
 - [uv](https://docs.astral.sh/uv/) — fast Python package manager
 

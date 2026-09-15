@@ -1,4 +1,4 @@
-"""System tray icon and JDownloader-style context menu."""
+"""System tray icon and context menu."""
 import os
 
 from PySide6.QtCore import QObject
@@ -90,7 +90,7 @@ class TrayController(QObject):
         menu.addSeparator()
         self._chunks = QSpinBox()
         self._chunks.setRange(1, 32)
-        self._chunks.setToolTip("Max chunks per download (yt-dlp -N)")
+        self._chunks.setToolTip("Max chunks per download")
         self._chunks.valueChanged.connect(
             lambda value: self.window._settings.setValue("fragments", value)
         )

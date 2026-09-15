@@ -1,4 +1,4 @@
-"""Compact File / Link properties strip, JDownloader-style."""
+"""Compact file and link properties strip."""
 from PySide6.QtCore import QSize, Signal
 from PySide6.QtWidgets import (
     QFormLayout,

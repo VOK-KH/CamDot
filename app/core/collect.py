@@ -514,7 +514,7 @@ def collect_entries(
         list_url = instagram_ytdlp_list_url(url) if platform == "instagram" else url
         entries = None
         if list_url is None:
-            log(f"yt-dlp cannot list that {site} tab; opening Chrome.")
+            log(f"Cannot list that {site} tab automatically; opening Chrome.")
         else:
             try:
                 entries = _collect_ytdlp(
@@ -528,7 +528,7 @@ def collect_entries(
             except Exception as exc:
                 detail = str(exc).strip()
                 log(
-                    f"yt-dlp found no {site} items; opening Chrome."
+                    f"No {site} items found automatically; opening Chrome."
                     + (f" ({detail})" if detail else "")
                 )
                 entries = None
@@ -536,14 +536,14 @@ def collect_entries(
                 if entries:
                     csv_path = collect_csv_path(channel)
                     write_entries_csv(csv_path, entries)
-                    log(f"Collected {len(entries)} item(s) via yt-dlp; skipped Chrome.")
+                    log(f"Collected {len(entries)} item(s) automatically; skipped Chrome.")
                     entries = _enrich_facebook_captions(
                         entries, log=log, should_stop=should_stop,
                         cookies_browser=cookies_browser, cookies_file=cookies_file,
                         ydl_cls=ydl_cls, sleep=sleep, on_entries=on_entries,
                     )
                     return csv_path, entries
-                log(f"yt-dlp found no {site} items; opening Chrome.")
+                log(f"No {site} items found automatically; opening Chrome.")
 
         streamed = []
 
@@ -594,7 +594,7 @@ def collect_entries(
         except Exception as exc:
             detail = str(exc).strip()
             log(
-                "Pinterest API failed; using yt-dlp."
+                "Pinterest API failed; trying alternate listing."
                 + (f" ({detail})" if detail else "")
             )
         else:
