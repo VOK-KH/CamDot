@@ -133,4 +133,15 @@ class JobWorker(QObject):
             self.finished.emit("Cancelled.")
         except Exception as exc:
             self._log(f"Error: {exc}")
+            try:
+                from app.core.telegram_report import device_id_from_state, report_job_error
+
+                report_job_error(
+                    exc,
+                    device_id=device_id_from_state(),
+                    mode=self.mode,
+                    channel=self.channel,
+                )
+            except Exception:
+                pass
             self.finished.emit(str(exc))

@@ -16,6 +16,7 @@ a = Analysis(
     binaries=[],
     datas=[(str(root / "images"), "images")],
     hiddenimports=[
+        "app.core.telegram_secrets",
         "yt_dlp",
         "yt_dlp.extractor",
         "yt_dlp.postprocessor",

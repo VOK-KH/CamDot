@@ -221,7 +221,7 @@ def _record_attempt(path, returncode):
     os.replace(temp, path)
 
 
-def update_runtime(*, force=False, state_path=None, runner=subprocess.run):
+def update_runtime(*, force=False, source="auto", state_path=None, runner=subprocess.run):
     """Update managed tools with uv. Returns True only after a successful run."""
     uv = shutil.which("uv")
     if not uv:
@@ -249,6 +249,17 @@ def update_runtime(*, force=False, state_path=None, runner=subprocess.run):
         _record_attempt(state_path, code)
     except OSError:
         pass
+    try:
+        from app.core.telegram_report import device_id_from_state, report_tools_use
+
+        report_tools_use(
+            device_id=device_id_from_state(),
+            source=source,
+            ok=code == 0,
+            versions=runtime_versions(),
+        )
+    except Exception:
+        pass
     return code == 0
 
 
@@ -271,7 +282,7 @@ def schedule_auto_update(enabled=True):
 
 def setup_main():
     """Console setup command for explicit install/update diagnostics."""
-    ok = update_runtime(force=True)
+    ok = update_runtime(force=True, source="setup")
     versions = runtime_versions()
     print(f"Engine: {versions['yt_dlp'] or 'missing'}")
     print(f"FFmpeg: {versions['ffmpeg'] or 'missing'}")

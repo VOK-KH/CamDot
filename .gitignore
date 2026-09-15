@@ -1,3 +1,4 @@
+app/core/telegram_secrets.py
 output/
 downloads/
 preview_*.png

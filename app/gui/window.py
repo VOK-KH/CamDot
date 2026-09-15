@@ -1288,6 +1288,7 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         self._action(help_menu, "&Supported sites", self._show_supported_sites)
+        self._action(help_menu, "Send &feedback…", self._send_feedback)
         self._action(help_menu, "&About", self._show_about)
         self._sync_menu_state()
 
@@ -1362,6 +1363,12 @@ class MainWindow(QMainWindow):
             if open_browser:
                 self.tools_checked.emit(f"{APP_NAME} {__version__} is up to date.")
             return
+        try:
+            from app.core.telegram_report import report_app_update
+
+            report_app_update(info, device_id=self._device_id())
+        except Exception:
+            pass
         self.tools_checked.emit(format_update_message(info))
         if open_browser:
             if info.get("download_url"):
@@ -1370,7 +1377,7 @@ class MainWindow(QMainWindow):
                 QDesktopServices.openUrl(QUrl(info["page_url"]))
 
     def _run_tool_update(self):
-        ok = update_runtime(force=True)
+        ok = update_runtime(force=True, source="manual")
         versions = runtime_versions()
         self.tools_checked.emit(
             f"Engine {versions['yt_dlp'] or 'missing'} · "
@@ -1380,6 +1387,22 @@ class MainWindow(QMainWindow):
 
     def _show_supported_sites(self):
         PlatformsDialog(self).exec()
+
+    def _device_id(self):
+        from app.core.telegram_report import device_id_from_settings
+
+        return device_id_from_settings(self._settings)
+
+    def _send_feedback(self):
+        from app.gui.dialogs.feedback import FeedbackDialog
+
+        dialog = FeedbackDialog(
+            device_id=self._device_id(),
+            log_text=self.log.toPlainText(),
+            parent=self,
+        )
+        if dialog.exec():
+            self._append_log("Feedback sent. Thank you.")
 
     def _show_about(self):
         versions = runtime_versions()
@@ -2635,11 +2658,22 @@ def run_gui(argv=None):
     app.setStyle("Fusion")
     app.setStyleSheet(theme.stylesheet(theme.DEFAULT_DARK))
     settings = QSettings(SETTINGS_ORG, "gui")
+    from app.core.telegram_report import (
+        device_id_from_settings,
+        install_crash_handlers,
+        report_launch,
+    )
+
+    device_id = device_id_from_settings(settings)
+    install_crash_handlers(device_id=device_id)
     if QSystemTrayIcon.isSystemTrayAvailable():
         app.setQuitOnLastWindowClosed(False)
     schedule_auto_update(settings.value("auto_update", True, bool))
     window = MainWindow(settings=settings)
     window.show()
+    threading.Thread(
+        target=report_launch, args=(settings, device_id), daemon=True, name="telegram-launch"
+    ).start()
     if settings.value("check_app_updates", True, bool):
         threading.Thread(target=window._run_app_update_check, daemon=True).start()
     return app.exec()
