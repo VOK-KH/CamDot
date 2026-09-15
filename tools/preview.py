@@ -9,11 +9,15 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from app.core.fonts import register_fonts, setup_app_font
+
+register_fonts()
+
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-from app.gui import MainWindow
 from app.core import theme
+from app.gui import MainWindow
 
 STATUSES = ["done"] * 14 + ["downloading"] * 3 + ["queued"] * 8 + ["failed"]
 
@@ -23,6 +27,7 @@ def main():
     dark = "--dark" in sys.argv
 
     app = QApplication.instance() or QApplication([])
+    setup_app_font(app)
     app.setStyle("Fusion")
     app.setStyleSheet(theme.stylesheet(dark))
 

@@ -7,6 +7,10 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from app.core.fonts import register_fonts
+
+register_fonts()
+
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt, QThreadPool
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
