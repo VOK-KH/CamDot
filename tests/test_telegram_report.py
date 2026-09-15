@@ -20,9 +20,11 @@ class TelegramReportTests(unittest.TestCase):
 
     def test_format_message_includes_event(self):
         text = telegram_report._format_message("crash", "Boom", "details", {"version": "1.0"})
-        self.assertIn("crash", text)
+        self.assertIn("Crash", text)
+        self.assertIn("💥", text)
         self.assertIn("Boom", text)
         self.assertIn("1.0", text)
+        self.assertIn("📦", text)
 
     @patch.dict(
         "os.environ",

@@ -28,6 +28,26 @@ EVENT_TOOLS = "tools"
 EVENT_APP_UPDATE = "app_update"
 EVENT_JOB_ERROR = "job_error"
 
+EVENT_EMOJI = {
+    EVENT_CRASH: "💥",
+    EVENT_FEEDBACK: "💬",
+    EVENT_VERSION_LAUNCH: "🚀",
+    EVENT_FIRST_ACTIVATE: "🆕",
+    EVENT_TOOLS: "🛠️",
+    EVENT_APP_UPDATE: "⬆️",
+    EVENT_JOB_ERROR: "⚠️",
+}
+
+FIELD_EMOJI = {
+    "version": "📦",
+    "device_id": "🖥️",
+    "platform": "🌐",
+    "python": "🐍",
+    "frozen": "📀",
+    "source": "🔧",
+    "ok": "✅",
+}
+
 _MAX_TEXT = 3900
 _send_lock = threading.Lock()
 
@@ -97,22 +117,36 @@ def _base_context(device_id=""):
     }
 
 
+def _format_field(key, value):
+    if isinstance(value, bool):
+        if key == "ok":
+            icon = "✅" if value else "❌"
+            label = "Success" if value else "Failed"
+            return f"{icon} <b>{label}</b>"
+        if key == "frozen":
+            icon = "📀" if value else "🐍"
+            label = "Installed app" if value else "Dev / Python"
+            return f"{icon} <b>{label}</b>"
+        value = "yes" if value else "no"
+    icon = FIELD_EMOJI.get(key, "•")
+    label = key.replace("_", " ").title()
+    return f"{icon} <b>{html.escape(label)}:</b> {html.escape(str(value))}"
+
+
 def _format_message(event, title, body, context=None):
     context = context or {}
+    icon = EVENT_EMOJI.get(event, "📣")
     lines = [
-        f"<b>{html.escape(APP_NAME)} report</b>",
-        f"<b>Event:</b> {html.escape(event)}",
-        f"<b>Title:</b> {html.escape(title)}",
+        f"{icon} <b>{html.escape(APP_NAME)} Report</b>",
+        f"📌 <b>Event:</b> {html.escape(event.replace('_', ' ').title())}",
+        f"📋 <b>Title:</b> {html.escape(title)}",
     ]
-    for key in ("version", "device_id", "platform", "python", "frozen", "source"):
+    for key in ("version", "device_id", "platform", "python", "frozen", "source", "ok"):
         if key in context and context[key] not in ("", None):
-            value = context[key]
-            if isinstance(value, bool):
-                value = "yes" if value else "no"
-            lines.append(f"<b>{html.escape(key)}:</b> {html.escape(str(value))}")
+            lines.append(_format_field(key, context[key]))
     if body:
         lines.append("")
-        lines.append(html.escape(body))
+        lines.append(f"📝 {html.escape(body)}")
     text = "\n".join(lines)
     if len(text) > _MAX_TEXT:
         text = text[: _MAX_TEXT - 20] + "\n… (truncated)"
