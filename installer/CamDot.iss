@@ -1,6 +1,6 @@
 ; CamDot Windows installer (Inno Setup 6)
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.2"
+  #define MyAppVersion "0.2.3"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist"

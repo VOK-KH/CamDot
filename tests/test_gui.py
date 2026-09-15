@@ -1309,6 +1309,50 @@ class GuiSmoke(unittest.TestCase):
         ):
             self.assertIn(name, labels)
 
+    def test_app_update_prompt_skips_download_when_declined(self):
+        info = {
+            "current": "0.2.1",
+            "latest": "0.2.2",
+            "asset_name": "CamDot-v0.2.2-Windows-x86_64-Setup.exe",
+            "download_url": "https://example.com/setup.exe",
+            "page_url": "https://github.com/VOK-KH/CamDot/releases",
+            "notes": "",
+        }
+        with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.No):
+            with patch.object(window_module.QDesktopServices, "openUrl") as open_url:
+                self.window._prompt_app_update(info)
+        open_url.assert_not_called()
+
+    def test_app_update_prompt_opens_download_when_confirmed(self):
+        info = {
+            "current": "0.2.1",
+            "latest": "0.2.2",
+            "asset_name": "CamDot-v0.2.2-Windows-x86_64-Setup.exe",
+            "download_url": "https://example.com/setup.exe",
+            "page_url": "https://github.com/VOK-KH/CamDot/releases",
+            "notes": "",
+        }
+        with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes):
+            with patch.object(window_module.QDesktopServices, "openUrl") as open_url:
+                self.window._prompt_app_update(info)
+        open_url.assert_called_once()
+
+    def test_run_app_update_check_emits_prompt_for_newer_release(self):
+        info = {
+            "current": "0.2.1",
+            "latest": "0.2.2",
+            "asset_name": "setup.exe",
+            "download_url": "https://example.com/setup.exe",
+            "page_url": "https://github.com/VOK-KH/CamDot/releases",
+            "notes": "",
+        }
+        with patch.object(window_module, "check_for_update", return_value=info):
+            with patch.object(self.window, "app_update_found") as found:
+                with patch.object(self.window, "app_update_uptodate") as uptodate:
+                    self.window._run_app_update_check(interactive=True)
+        found.emit.assert_called_once_with(info)
+        uptodate.emit.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

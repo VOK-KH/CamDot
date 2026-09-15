@@ -116,7 +116,7 @@ from app.core.runtime import (
     sweep_download_folder,
     update_runtime,
 )
-from app.core.updates import check_for_update, format_update_message
+from app.core.updates import check_for_update, format_update_message, format_update_prompt
 from app.core.urls import (
     clean_url,
     extract_supported_urls,
@@ -129,11 +129,15 @@ from app.core.urls import (
 class MainWindow(QMainWindow):
     tools_checked = Signal(str)
     gpu_detected = Signal(str, str)
+    app_update_found = Signal(object)
+    app_update_uptodate = Signal()
 
     def __init__(self, dark=theme.DEFAULT_DARK, settings=None):
         super().__init__()
         self.tools_checked.connect(self._append_log)
         self.gpu_detected.connect(self._on_gpu_detected)
+        self.app_update_found.connect(self._prompt_app_update)
+        self.app_update_uptodate.connect(self._show_app_uptodate)
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 680)
         # No native title bar: the menu strip carries the window controls, and
@@ -1354,14 +1358,14 @@ class MainWindow(QMainWindow):
     def _check_app_updates(self):
         self._append_log(f"Checking for {APP_NAME} updates…")
         threading.Thread(
-            target=self._run_app_update_check, kwargs={"open_browser": True}, daemon=True
+            target=self._run_app_update_check, kwargs={"interactive": True}, daemon=True
         ).start()
 
-    def _run_app_update_check(self, *, open_browser=False):
+    def _run_app_update_check(self, *, interactive=False):
         info = check_for_update()
         if not info:
-            if open_browser:
-                self.tools_checked.emit(f"{APP_NAME} {__version__} is up to date.")
+            if interactive:
+                self.app_update_uptodate.emit()
             return
         try:
             from app.core.telegram_report import report_app_update
@@ -1370,11 +1374,43 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.tools_checked.emit(format_update_message(info))
-        if open_browser:
-            if info.get("download_url"):
-                QDesktopServices.openUrl(QUrl(info["download_url"]))
-            elif info.get("page_url"):
-                QDesktopServices.openUrl(QUrl(info["page_url"]))
+        if interactive:
+            self.app_update_found.emit(info)
+
+    @Slot()
+    def _show_app_uptodate(self):
+        alert(
+            self,
+            "info",
+            "Up to date",
+            f"{APP_NAME} {__version__} is up to date.",
+        )
+
+    @Slot(object)
+    def _prompt_app_update(self, info):
+        answer = alert(
+            self,
+            "question",
+            "Update available",
+            f"{format_update_prompt(info)}\n\nDownload the update now?",
+            buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            default=QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._append_log("Update download skipped.")
+            return
+        url = info.get("download_url") or info.get("page_url")
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+            self._append_log("Opening update download…")
+        else:
+            alert(
+                self,
+                "warning",
+                "Update available",
+                "A newer release was found, but no download link is available yet.\n"
+                f"Visit {info.get('page_url') or 'GitHub Releases'} manually.",
+            )
 
     def _run_tool_update(self):
         ok = update_runtime(force=True, source="manual")
@@ -2675,7 +2711,11 @@ def run_gui(argv=None):
         target=report_launch, args=(settings, device_id), daemon=True, name="telegram-launch"
     ).start()
     if settings.value("check_app_updates", True, bool):
-        threading.Thread(target=window._run_app_update_check, daemon=True).start()
+        threading.Thread(
+            target=window._run_app_update_check,
+            kwargs={"interactive": True},
+            daemon=True,
+        ).start()
     return app.exec()
 
 

@@ -52,6 +52,20 @@ class UpdateChecks(unittest.TestCase):
         self.assertEqual(info["latest"], "0.3.0")
         self.assertEqual(info["download_url"], "https://example.com/win.exe")
 
+    def test_format_update_prompt(self):
+        text = updates.format_update_prompt(
+            {
+                "current": "0.2.1",
+                "latest": "0.2.2",
+                "asset_name": "CamDot-v0.2.2-Windows-x86_64-Setup.exe",
+                "notes": "Bug fixes",
+            }
+        )
+        self.assertIn("0.2.1", text)
+        self.assertIn("0.2.2", text)
+        self.assertIn("Setup.exe", text)
+        self.assertIn("Bug fixes", text)
+
 
 if __name__ == "__main__":
     unittest.main()

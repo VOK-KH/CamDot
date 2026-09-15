@@ -102,3 +102,20 @@ def format_update_message(info):
         lines.append("")
         lines.append(notes[:800])
     return "\n".join(lines)
+
+
+def format_update_prompt(info):
+    """Short summary for the update confirmation dialog."""
+    lines = [
+        f"A new version of {APP_NAME} is available.",
+        "",
+        f"Installed: {info['current']}",
+        f"Latest: {info['latest']}",
+    ]
+    if info.get("asset_name"):
+        lines.append(f"Package: {info['asset_name']}")
+    notes = (info.get("notes") or "").strip()
+    if notes:
+        lines.append("")
+        lines.append(notes[:500])
+    return "\n".join(lines)
