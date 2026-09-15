@@ -55,6 +55,15 @@ class Store(unittest.TestCase):
             self.assertEqual(entries[0]["percent"], 50.0)
             self.assertEqual(entries[0]["filepath"], part)
 
+    def test_find_output_file_searches_kind_subfolders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            nested = os.path.join(folder, "video", "clip [abc].mp4")
+            os.makedirs(os.path.dirname(nested), exist_ok=True)
+            with open(nested, "wb") as f:
+                f.write(b"x")
+            found = store.find_output_file(folder, "abc", partial=False)
+            self.assertEqual(found, os.path.abspath(nested))
+
     def test_list_output_files_includes_part_and_named_path(self):
         with tempfile.TemporaryDirectory() as folder:
             finished = os.path.join(folder, "clip [abc].mp4")

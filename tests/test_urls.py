@@ -204,6 +204,9 @@ class DetectPlatform(unittest.TestCase):
             "https://v.douyin.com/abc123": "douyin",
             "https://www.kuaishou.com/short-video/1": "kuaishou",
             "https://www.pinterest.com/pin/123": "pinterest",
+            "https://www.threads.net/@user/post/1": "threads",
+            "https://www.reddit.com/r/test/comments/abc/title/": "reddit",
+            "https://www.twitch.tv/videos/123": "twitch",
             "https://www.dramabox.com/watch/abc": "generic",
         }
         for url, platform in cases.items():

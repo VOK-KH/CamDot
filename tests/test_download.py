@@ -16,6 +16,7 @@ from app.core.download import (
     _twitter_media_fallback,
     _yt_dlp_args,
     download_urls,
+    organize_media_into_kinds,
     parse_info_line,
     parse_progress_line,
     pinterest_pin_id,
@@ -408,21 +409,40 @@ class MediaKindArgs(unittest.TestCase):
         self.assertNotIn("--extract-audio", args)
 
 
-class RelocateArtifacts(unittest.TestCase):
-    def test_keeps_media_in_the_source_folder(self):
+class OrganizeMedia(unittest.TestCase):
+    def test_moves_finished_files_into_kind_folders(self):
         with tempfile.TemporaryDirectory() as folder:
-            for name in ("clip.mp4", "song.m4a", "cover.jpg", "clip.mp4.part", "meta.ytdl"):
+            for name in ("clip.mp4", "song.m4a", "cover.jpg", "clip.mp4.part"):
                 with open(os.path.join(folder, name), "wb") as f:
                     f.write(b"x")
+            organize_media_into_kinds(folder, {"video", "music", "image"})
+            self.assertTrue(os.path.isfile(os.path.join(folder, "video", "clip.mp4")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "audio", "song.m4a")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "image", "cover.jpg")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "clip.mp4.part")))
+
+
+class RelocateArtifacts(unittest.TestCase):
+    def test_finds_media_in_kind_subfolders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            layout = {
+                "video/clip.mp4": b"x",
+                "audio/song.m4a": b"x",
+                "image/cover.jpg": b"x",
+                "clip.mp4.part": b"x",
+                "meta.ytdl": b"x",
+            }
+            for rel, data in layout.items():
+                path = os.path.join(folder, rel)
+                os.makedirs(os.path.dirname(path) or folder, exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(data)
             found = relocate_artifacts(folder, {"video", "music", "image"})
             names = {os.path.basename(path) for path in found}
             self.assertEqual(names, {"clip.mp4", "song.m4a", "cover.jpg"})
-            self.assertTrue(os.path.isfile(os.path.join(folder, "clip.mp4")))
-            self.assertTrue(os.path.isfile(os.path.join(folder, "song.m4a")))
-            self.assertTrue(os.path.isfile(os.path.join(folder, "cover.jpg")))
-            self.assertFalse(os.path.isdir(os.path.join(folder, "video")))
-            self.assertFalse(os.path.isdir(os.path.join(folder, "audio")))
-            self.assertFalse(os.path.isdir(os.path.join(folder, "image")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "video", "clip.mp4")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "audio", "song.m4a")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "image", "cover.jpg")))
             self.assertTrue(os.path.isfile(os.path.join(folder, "clip.mp4.part")))
 
 

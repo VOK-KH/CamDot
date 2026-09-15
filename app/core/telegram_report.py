@@ -166,8 +166,28 @@ def _post_message(token, chat_id, text):
         response.read()
 
 
+def reporting_enabled():
+    """Respect Settings → Privacy → send anonymous reports."""
+    enabled = os.environ.get("CAMDOT_TELEGRAM_REPORTS", "").strip().lower()
+    if enabled in ("0", "false", "no", "off"):
+        return False
+    if enabled in ("1", "true", "yes", "on"):
+        return True
+    try:
+        from PySide6.QtCore import QSettings
+
+        from app.core.runtime import SETTINGS_ORG
+
+        settings = QSettings(SETTINGS_ORG, "gui")
+        return settings.value("telegram_reports", True, bool)
+    except Exception:
+        return True
+
+
 def send_report(event, title, body="", *, device_id="", extra=None, block=False):
     """Queue a Telegram report. Returns True when queued (or sent if block=True)."""
+    if not reporting_enabled():
+        return False
     token, chat_id = _credentials()
     if not token or not chat_id:
         return False

@@ -73,6 +73,20 @@ class TelegramReportTests(unittest.TestCase):
         send_report.assert_called_once()
         self.assertEqual(send_report.call_args.args[0], telegram_report.EVENT_CRASH)
 
+    @patch.dict("os.environ", {"CAMDOT_TELEGRAM_REPORTS": "0"}, clear=False)
+    def test_reporting_disabled_by_env(self):
+        self.assertFalse(telegram_report.reporting_enabled())
+
+    def test_reporting_respects_settings(self):
+        settings = QSettings("CamDot", "gui")
+        settings.setValue("telegram_reports", False)
+        settings.sync()
+        try:
+            with patch.dict("os.environ", {}, clear=True):
+                self.assertFalse(telegram_report.reporting_enabled())
+        finally:
+            settings.remove("telegram_reports")
+
 
 if __name__ == "__main__":
     unittest.main()

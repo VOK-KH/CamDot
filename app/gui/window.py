@@ -1,7 +1,9 @@
 """Main window: Download and Grabber tabs, menus, and job controls."""
+import json
 import os
 import sys
 import threading
+import time
 
 from PySide6.QtCore import (
     QEvent,
@@ -116,7 +118,12 @@ from app.core.runtime import (
     sweep_download_folder,
     update_runtime,
 )
-from app.core.updates import check_for_update, format_update_message, format_update_prompt
+from app.core.updates import (
+    check_for_update,
+    format_update_message,
+    format_update_prompt,
+    should_offer_update,
+)
 from app.core.urls import (
     clean_url,
     extract_supported_urls,
@@ -131,10 +138,12 @@ class MainWindow(QMainWindow):
     gpu_detected = Signal(str, str)
     app_update_found = Signal(object)
     app_update_uptodate = Signal()
+    open_url = Signal(str)
 
     def __init__(self, dark=theme.DEFAULT_DARK, settings=None):
         super().__init__()
         self.tools_checked.connect(self._append_log)
+        self.open_url.connect(lambda url: QDesktopServices.openUrl(QUrl(url)))
         self.gpu_detected.connect(self._on_gpu_detected)
         self.app_update_found.connect(self._prompt_app_update)
         self.app_update_uptodate.connect(self._show_app_uptodate)
@@ -1235,6 +1244,10 @@ class MainWindow(QMainWindow):
         self.act_folder = self._action(
             file_menu, "Open download &folder", self._open_folder, None, "folder")
         file_menu.addSeparator()
+        self._action(file_menu, "E&xport list…", self._export_list, None, "csv")
+        self._action(file_menu, "Import list…", self._import_list, None, "plus")
+        self._action(file_menu, "Retry &failed items", self._retry_failed_items, None, "refresh")
+        file_menu.addSeparator()
         self.act_settings = self._action(
             file_menu, "&Settings…", self._open_settings, "Ctrl+,", "settings")
         file_menu.addSeparator()
@@ -1380,7 +1393,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.tools_checked.emit(format_update_message(info))
-        if prompt_update:
+        if prompt_update and should_offer_update(info, self._settings):
             self.app_update_found.emit(info)
 
     @Slot()
@@ -1394,33 +1407,89 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _prompt_app_update(self, info):
-        answer = alert(
-            self,
-            "question",
-            "Update available",
-            f"{format_update_prompt(info)}\n\nDownload the update now?",
-            buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            default=QMessageBox.StandardButton.Yes,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            self._append_log("Update download skipped.")
-            return
-        url = info.get("download_url") or info.get("page_url")
-        if url:
-            QDesktopServices.openUrl(QUrl(url))
-            self._append_log("Opening update download…")
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setText(f"{format_update_prompt(info)}\n\nInstall the update now?")
+        update_btn = box.addButton("Update now", QMessageBox.ButtonRole.AcceptRole)
+        later_btn = box.addButton("Remind later", QMessageBox.ButtonRole.ActionRole)
+        skip_btn = box.addButton("Skip this version", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(update_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        latest = info.get("latest", "")
+        if clicked == update_btn:
+            self._append_log("Downloading update…")
+            threading.Thread(target=self._apply_app_update, args=(info,), daemon=True).start()
+        elif clicked == later_btn:
+            self._settings.setValue("update_remind_after", time.time() + 3 * 86400)
+            self._settings.sync()
+            self._append_log("Update reminder snoozed for 3 days.")
+        elif clicked == skip_btn:
+            self._settings.setValue("skipped_update_version", latest)
+            self._settings.sync()
+            self._append_log(f"Skipped update {latest}.")
         else:
-            alert(
-                self,
-                "warning",
-                "Update available",
-                "A newer release was found, but no download link is available yet.\n"
-                f"Visit {info.get('page_url') or 'GitHub Releases'} manually.",
-            )
+            self._append_log("Update postponed.")
+
+    def _apply_app_update(self, info):
+        try:
+            from app.core.app_updater import apply_update
+
+            path = apply_update(info)
+            self.tools_checked.emit(f"Installing {os.path.basename(path)}…")
+        except Exception as exc:
+            self.tools_checked.emit(f"Update failed: {exc}")
+            url = info.get("download_url") or info.get("page_url")
+            if url:
+                self.open_url.emit(url)
+
+    def _export_list(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export list", "", "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        payload = self.model.entries()
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        self._append_log(f"Exported {len(payload)} item(s) to {path}")
+
+    def _import_list(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import list", "", "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, list):
+            alert(self, "warning", "Import failed", "The file is not a valid list.")
+            return
+        entries = [item for item in payload if isinstance(item, dict) and item.get("url")]
+        if not entries:
+            alert(self, "warning", "Import failed", "No URLs were found in the file.")
+            return
+        self.model.add_entries(entries)
+        self._append_log(f"Imported {len(entries)} item(s) from {path}")
+        self._update_counter()
+
+    def _retry_failed_items(self):
+        count = self.model.requeue_failed()
+        if not count:
+            alert(self, "info", "Nothing to retry", "There are no failed items in the list.")
+            return
+        self._append_log(f"Requeued {count} failed item(s).")
+        self._update_counter()
 
     def _run_tool_update(self):
         ok = update_runtime(force=True, source="manual")
         versions = runtime_versions()
+        if getattr(sys, "frozen", False) and not ok:
+            self.tools_checked.emit(
+                "Download tools are bundled with this install and cannot be updated here."
+            )
+            return
         self.tools_checked.emit(
             f"Engine {versions['yt_dlp'] or 'missing'} · "
             f"FFmpeg {'ready' if versions['ffmpeg'] else 'missing'}"
@@ -2013,6 +2082,8 @@ class MainWindow(QMainWindow):
     def _end_grab_panel(self, status):
         self.grab_panel.end_run(self._grab_readings(status), self._grab_current)
         self._place_grab_panel()
+        if status in ("Done!", "Aborted", "Idle"):
+            self._hide_grab_panel()
 
     def _hide_grab_panel(self):
         """The pin keeps the last run's numbers on screen until it is unpinned."""

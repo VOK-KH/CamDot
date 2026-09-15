@@ -52,6 +52,18 @@ def platform_from_extractor(extractor_key="", domain=""):
         return "kuaishou"
     if "pinterest." in host or host == "pin.it":
         return "pinterest"
+    if "threads." in host:
+        return "threads"
+    if "reddit." in host or host in ("redd.it", "old.reddit.com"):
+        return "reddit"
+    if "snapchat." in host:
+        return "snapchat"
+    if "xiaohongshu." in host or host == "xhslink.com" or host.endswith(".xhslink.com"):
+        return "xiaohongshu"
+    if "weibo." in host:
+        return "weibo"
+    if "twitch." in host:
+        return "twitch"
     return ""
 
 

@@ -19,6 +19,12 @@ INSTAGRAM_FEED_TABS = ("reels", "reposts", "tagged")
 DOUYIN_HOSTS = ("douyin.com", "iesdouyin.com")
 KUAISHOU_HOSTS = ("kuaishou.com", "gifshow.com", "kwai.com")
 PINTEREST_HOSTS = ("pinterest.com", "pin.it")
+THREADS_HOSTS = ("threads.net",)
+REDDIT_HOSTS = ("reddit.com", "redd.it", "old.reddit.com")
+SNAPCHAT_HOSTS = ("snapchat.com",)
+XIAOHONGSHU_HOSTS = ("xiaohongshu.com", "xhslink.com")
+WEIBO_HOSTS = ("weibo.com", "weibo.cn")
+TWITCH_HOSTS = ("twitch.tv",)
 PINTEREST_RESERVED = frozenset({
     "pin", "ideas", "search", "today", "news", "settings", "resource",
 })
@@ -162,6 +168,18 @@ def detect_platform(url):
         return "kuaishou"
     if _matches_host(host, PINTEREST_HOSTS):
         return "pinterest"
+    if _matches_host(host, THREADS_HOSTS):
+        return "threads"
+    if _matches_host(host, REDDIT_HOSTS):
+        return "reddit"
+    if _matches_host(host, SNAPCHAT_HOSTS):
+        return "snapchat"
+    if _matches_host(host, XIAOHONGSHU_HOSTS):
+        return "xiaohongshu"
+    if _matches_host(host, WEIBO_HOSTS):
+        return "weibo"
+    if _matches_host(host, TWITCH_HOSTS):
+        return "twitch"
     if "." in host:
         return "generic"
     return "unknown"

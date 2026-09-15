@@ -69,17 +69,49 @@ def _matches_id(name, rid):
     return f"[{rid}]" in name or name.startswith(f"{rid}.") or name.startswith(f"{rid} ")
 
 
-def find_output_file(output_dir, rid, partial=False):
-    if not rid or not os.path.isdir(output_dir):
+def _find_in_dir(folder, rid, partial=False):
+    if not rid or not os.path.isdir(folder):
         return ""
-    for name in os.listdir(output_dir):
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return ""
+    for name in names:
         is_part = name.endswith(".part")
         if partial != is_part:
             continue
         if not partial and name.endswith(SKIP_SUFFIXES):
             continue
         if _matches_id(name, rid):
-            return os.path.join(output_dir, name)
+            return os.path.join(folder, name)
+    return ""
+
+
+def _iter_search_dirs(output_dir):
+    yield output_dir
+    if not os.path.isdir(output_dir):
+        return
+    try:
+        for name in os.listdir(output_dir):
+            path = os.path.join(output_dir, name)
+            if os.path.isdir(path):
+                yield path
+                try:
+                    for sub in os.listdir(path):
+                        subpath = os.path.join(path, sub)
+                        if os.path.isdir(subpath):
+                            yield subpath
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def find_output_file(output_dir, rid, partial=False):
+    for folder in _iter_search_dirs(output_dir):
+        found = _find_in_dir(folder, rid, partial=partial)
+        if found:
+            return found
     return ""
 
 
@@ -106,10 +138,15 @@ def list_output_files(output_dir, rid, filepath=""):
     if filepath:
         add(filepath + ".part")
         add(filepath + ".ytdl")
-    if rid and os.path.isdir(output_dir):
-        for name in os.listdir(output_dir):
-            if _matches_id(name, rid):
-                add(os.path.join(output_dir, name))
+    if rid:
+        for folder in _iter_search_dirs(output_dir):
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                continue
+            for name in names:
+                if _matches_id(name, rid):
+                    add(os.path.join(folder, name))
     return found
 
 

@@ -223,6 +223,8 @@ def _record_attempt(path, returncode):
 
 def update_runtime(*, force=False, source="auto", state_path=None, runner=subprocess.run):
     """Update managed tools with uv. Returns True only after a successful run."""
+    if getattr(sys, "frozen", False):
+        return False
     uv = shutil.which("uv")
     if not uv:
         return False

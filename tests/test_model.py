@@ -245,6 +245,18 @@ class Model(unittest.TestCase):
         self.assertEqual(self.model.headerData(COL_URL, horizontal, role), "Download from")
         self.assertEqual(self.model.headerData(COL_ADDED, horizontal, role), "Added")
 
+    def test_requeue_failed_resets_status_and_counts(self):
+        self.model.set_urls([
+            {"url": URLS[0], "status": "failed", "percent": 12},
+            {"url": URLS[1], "status": "done", "percent": 100},
+        ])
+        count = self.model.requeue_failed()
+        self.assertEqual(count, 1)
+        self.assertEqual(self.model.status_at(0), "queued")
+        self.assertEqual(self.model.data(self.model.index(0, COL_PROGRESS), PERCENT_ROLE), 0.0)
+        self.assertEqual(self.model.counts()["failed"], 0)
+        self.assertEqual(self.model.counts()["queued"], 1)
+
     def test_add_entries_prepends_and_rebuilds_url_map(self):
         fresh = "https://www.facebook.com/reel/000"
         added = self.model.add_entries([{"url": fresh, "title": "First"}], prepend=True)

@@ -3,6 +3,7 @@ import json
 import platform
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -102,6 +103,20 @@ def format_update_message(info):
         lines.append("")
         lines.append(notes[:800])
     return "\n".join(lines)
+
+
+def should_offer_update(info, settings):
+    """Return False when the user skipped or snoozed this release."""
+    latest = (info.get("latest") or "").strip()
+    if not latest:
+        return True
+    if settings.value("skipped_update_version", "", str).strip() == latest:
+        return False
+    try:
+        remind_after = float(settings.value("update_remind_after", 0) or 0)
+    except (TypeError, ValueError):
+        remind_after = 0
+    return not (remind_after and time.time() < remind_after)
 
 
 def format_update_prompt(info):

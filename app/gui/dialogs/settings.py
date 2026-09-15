@@ -124,7 +124,11 @@ class SettingsDialog(QDialog):
         self.close_to_tray.setToolTip(
             "Close and minimise hide the window; clipboard grab and downloads continue."
         )
-        self.auto_update = QCheckBox("Automatically update download tools daily")
+        self.check_app_updates = QCheckBox("Check for app updates on startup")
+        self.auto_update = QCheckBox("Automatically update download tools daily (dev installs only)")
+        self.auto_update.setToolTip(
+            "Installed CamDot builds bundle their download tools; this applies when running from source."
+        )
         self.speed_limit_on = QCheckBox("Speed limit")
         self.speed_limit = QLineEdit()
         self.speed_limit.setPlaceholderText("50K")
@@ -152,6 +156,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self.show_log)
         form.addRow("", self.link_grabber)
         form.addRow("", self.close_to_tray)
+        form.addRow("", self.check_app_updates)
         form.addRow("", self.auto_update)
         form.addRow("Download speed", speed_row)
         form.addRow("", self.grab_add_at_top)
@@ -159,6 +164,17 @@ class SettingsDialog(QDialog):
         form.addRow("", self.grab_autostart)
         form.addRow("TikTok newer than", self.tiktok_age)
         tabs.addTab(general, "General")
+
+        privacy = QWidget()
+        privacy_form = QFormLayout(privacy)
+        _compact_form(privacy_form)
+        self.telegram_reports = QCheckBox("Send anonymous crash and usage reports")
+        self.telegram_reports.setToolTip(
+            "Includes app version, platform, device id, and feedback you submit. "
+            "Never includes download URLs unless you send feedback."
+        )
+        privacy_form.addRow("", self.telegram_reports)
+        tabs.addTab(privacy, "Privacy")
 
         tools = QWidget()
         tools_form = QFormLayout(tools)
@@ -219,7 +235,9 @@ class SettingsDialog(QDialog):
         self.show_log.setChecked(get("log_visible", False, bool))
         self.link_grabber.setChecked(get("link_grabber", True, bool))
         self.close_to_tray.setChecked(get("close_to_tray", True, bool))
+        self.check_app_updates.setChecked(get("check_app_updates", True, bool))
         self.auto_update.setChecked(get("auto_update", True, bool))
+        self.telegram_reports.setChecked(get("telegram_reports", True, bool))
         self.speed_limit_on.setChecked(get("speed_limit_on", False, bool))
         self.speed_limit.setText(get("speed_limit", "", str))
         self.grab_add_at_top.setChecked(get("grab_add_at_top", False, bool))
@@ -248,7 +266,9 @@ class SettingsDialog(QDialog):
         self.show_log.setChecked(False)
         self.link_grabber.setChecked(True)
         self.close_to_tray.setChecked(True)
+        self.check_app_updates.setChecked(True)
         self.auto_update.setChecked(True)
+        self.telegram_reports.setChecked(True)
         self.speed_limit_on.setChecked(False)
         self.speed_limit.clear()
         self.grab_add_at_top.setChecked(False)
@@ -275,7 +295,9 @@ class SettingsDialog(QDialog):
         self.settings.setValue("log_visible", self.show_log.isChecked())
         self.settings.setValue("link_grabber", self.link_grabber.isChecked())
         self.settings.setValue("close_to_tray", self.close_to_tray.isChecked())
+        self.settings.setValue("check_app_updates", self.check_app_updates.isChecked())
         self.settings.setValue("auto_update", self.auto_update.isChecked())
+        self.settings.setValue("telegram_reports", self.telegram_reports.isChecked())
         self.settings.setValue("speed_limit_on", self.speed_limit_on.isChecked())
         self.settings.setValue("speed_limit", self.speed_limit.text().strip())
         self.settings.setValue("grab_add_at_top", self.grab_add_at_top.isChecked())

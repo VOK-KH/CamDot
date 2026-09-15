@@ -442,6 +442,23 @@ class ReelModel(QAbstractTableModel):
             if reel.status != "done" and (wanted is None or reel.url in wanted)
         ]
 
+    def requeue_failed(self):
+        """Reset failed rows to queued so they can be downloaded again."""
+        count = 0
+        last = len(COLUMNS) - 1
+        for row, reel in enumerate(self._reels):
+            if reel.status != "failed":
+                continue
+            self._counts["failed"] -= 1
+            self._counts["queued"] += 1
+            reel.status = "queued"
+            reel.percent = 0.0
+            reel.speed = 0.0
+            reel.eta = 0.0
+            count += 1
+            self.dataChanged.emit(self.index(row, COL_STATUS), self.index(row, last))
+        return count
+
     def clear(self):
         self.set_urls([])
 

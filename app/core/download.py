@@ -148,21 +148,68 @@ def _kind_for_ext(ext):
     return ""
 
 
-def relocate_artifacts(source_dir, media_kinds=None):
-    """List finished media in the source folder; video, audio, and image stay together."""
+_KIND_DIRS = {"video": "video", "music": "audio", "image": "image"}
+
+
+def organize_media_into_kinds(source_dir, media_kinds=None):
+    """Move finished files into video/, audio/, and image/ under the source folder."""
     kinds = normalize_media_kinds(media_kinds)
     if not source_dir or not os.path.isdir(source_dir):
-        return []
-    found = []
+        return
     try:
-        names = os.listdir(source_dir)
+        names = list(os.listdir(source_dir))
     except OSError:
-        return []
+        return
     for name in names:
         path = os.path.join(source_dir, name)
         if not os.path.isfile(path):
             continue
         ext = os.path.splitext(name)[1].lower()
+        if ext in _STAGING_EXTS:
+            continue
+        kind = _kind_for_ext(ext)
+        if not kind or kind not in kinds:
+            continue
+        dest_dir = os.path.join(source_dir, _KIND_DIRS[kind])
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, name)
+        if os.path.abspath(path) == os.path.abspath(dest):
+            continue
+        try:
+            os.replace(path, dest)
+        except OSError:
+            continue
+
+
+def _iter_media_files(source_dir):
+    if not source_dir or not os.path.isdir(source_dir):
+        return
+    try:
+        names = os.listdir(source_dir)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(source_dir, name)
+        if os.path.isfile(path):
+            yield path
+            continue
+        if not os.path.isdir(path):
+            continue
+        try:
+            for sub in os.listdir(path):
+                subpath = os.path.join(path, sub)
+                if os.path.isfile(subpath):
+                    yield subpath
+        except OSError:
+            continue
+
+
+def relocate_artifacts(source_dir, media_kinds=None):
+    """List finished media in the source folder and kind subfolders."""
+    kinds = normalize_media_kinds(media_kinds)
+    found = []
+    for path in _iter_media_files(source_dir):
+        ext = os.path.splitext(path)[1].lower()
         if ext in _STAGING_EXTS:
             continue
         kind = _kind_for_ext(ext)
@@ -756,6 +803,7 @@ def _download_one(
                 on_progress=on_progress, should_stop=should_stop,
                 media_kinds=kinds,
             ):
+                organize_media_into_kinds(dest_dir, kinds)
                 relocated = relocate_artifacts(dest_dir, kinds)
                 if relocated:
                     on_progress(url, {"filepath": relocated[0]})
@@ -764,6 +812,7 @@ def _download_one(
         except StopRequested:
             on_progress(url, {"status": "cancelled"})
             raise
+    organize_media_into_kinds(dest_dir, kinds)
     relocated = relocate_artifacts(dest_dir, kinds)
     if platform == "pinterest" and (code != 0 or not _has_downloaded_media(dest_dir)):
         try:
@@ -772,6 +821,7 @@ def _download_one(
                 on_progress=on_progress, should_stop=should_stop,
                 media_kinds=kinds,
             ):
+                organize_media_into_kinds(dest_dir, kinds)
                 relocated = relocate_artifacts(dest_dir, kinds)
                 if relocated:
                     on_progress(url, {"filepath": relocated[0]})

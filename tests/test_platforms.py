@@ -19,8 +19,6 @@ ACTIVE_IDS = (
     "kuaishou",
     "pinterest",
     "generic",
-)
-COMING_SOON_IDS = (
     "threads",
     "reddit",
     "snapchat",
@@ -28,6 +26,7 @@ COMING_SOON_IDS = (
     "weibo",
     "twitch",
 )
+COMING_SOON_IDS = ()
 
 
 class PlatformCatalog(unittest.TestCase):
@@ -35,9 +34,8 @@ class PlatformCatalog(unittest.TestCase):
         ids = [entry["id"] for entry in active_platforms()]
         self.assertEqual(ids, list(ACTIVE_IDS))
 
-    def test_coming_soon_includes_threads(self):
+    def test_coming_soon_is_empty_for_now(self):
         ids = [entry["id"] for entry in coming_soon_platforms()]
-        self.assertIn("threads", ids)
         self.assertEqual(ids, list(COMING_SOON_IDS))
 
     def test_coming_soon_ids_are_not_active(self):

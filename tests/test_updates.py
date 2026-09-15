@@ -1,7 +1,8 @@
 """Tests for GitHub release update checks."""
 import json
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.core import updates
 
@@ -65,6 +66,27 @@ class UpdateChecks(unittest.TestCase):
         self.assertIn("0.2.2", text)
         self.assertIn("Setup.exe", text)
         self.assertIn("Bug fixes", text)
+
+    def test_should_offer_update_respects_skip_and_snooze(self):
+        info = {"latest": "0.3.0"}
+        settings = MagicMock()
+        settings.value.side_effect = lambda key, default="", *_: {
+            "skipped_update_version": "0.3.0",
+            "update_remind_after": 0,
+        }.get(key, default)
+        self.assertFalse(updates.should_offer_update(info, settings))
+
+        settings.value.side_effect = lambda key, default="", *_: {
+            "skipped_update_version": "",
+            "update_remind_after": time.time() + 3600,
+        }.get(key, default)
+        self.assertFalse(updates.should_offer_update(info, settings))
+
+        settings.value.side_effect = lambda key, default="", *_: {
+            "skipped_update_version": "",
+            "update_remind_after": 0,
+        }.get(key, default)
+        self.assertTrue(updates.should_offer_update(info, settings))
 
 
 if __name__ == "__main__":
