@@ -1,6 +1,6 @@
 """Non-GUI download engine: collect, download, list model, and runtime.
 
-    app/core/main.py             CLI entry (`uv run reels`)
+    app/core/main.py             CLI entry (`uv run camdot`)
     app/core/collect.py           URL listing and metadata
     app/core/download.py          yt-dlp download pool
     app/core/scrape.py           Facebook /reels Selenium scrape

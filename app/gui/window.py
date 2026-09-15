@@ -103,7 +103,10 @@ from app.core.model import (
     ReelModel,
     format_eta,
 )
+from app import __version__
 from app.core.runtime import (
+    APP_NAME,
+    SETTINGS_ORG,
     collect_csv_path,
     resolve_output_root,
     runtime_versions,
@@ -112,6 +115,7 @@ from app.core.runtime import (
     sweep_download_folder,
     update_runtime,
 )
+from app.core.updates import check_for_update, format_update_message
 from app.core.urls import (
     clean_url,
     extract_supported_urls,
@@ -129,7 +133,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.tools_checked.connect(self._append_log)
         self.gpu_detected.connect(self._on_gpu_detected)
-        self.setWindowTitle("Reels Downloader")
+        self.setWindowTitle(APP_NAME)
         self.resize(1180, 680)
         # No native title bar: the menu strip carries the window controls, and
         # the outermost FRAME_MARGIN pixels resize the window (see _frame_event).
@@ -149,7 +153,7 @@ class MainWindow(QMainWindow):
         self._grab_aborted = False
         self._grab_manual = False
         self._dark = dark
-        self._settings = settings or QSettings("facebook-reels-downloader", "gui")
+        self._settings = settings or QSettings(SETTINGS_ORG, "gui")
         self._columns_locked = self._settings.value("columns_locked", False, bool)
         self._h_scrollbar = False
         self.grab_add_at_top = False
@@ -1274,6 +1278,7 @@ class MainWindow(QMainWindow):
             tools_menu, "Show grabber &monitor", self._show_grab_monitor, None, "activity")
         tools_menu.addSeparator()
         self._action(tools_menu, "Check for tool &updates", self._check_tool_updates)
+        self._action(tools_menu, "Check for app &updates", self._check_app_updates)
         self._action(tools_menu, "Open app &data folder", self._open_state_folder)
 
         help_menu = bar.addMenu("&Help")
@@ -1340,6 +1345,25 @@ class MainWindow(QMainWindow):
         self._append_log("Checking yt-dlp and FFmpeg for updates…")
         threading.Thread(target=self._run_tool_update, daemon=True).start()
 
+    def _check_app_updates(self):
+        self._append_log(f"Checking for {APP_NAME} updates…")
+        threading.Thread(
+            target=self._run_app_update_check, kwargs={"open_browser": True}, daemon=True
+        ).start()
+
+    def _run_app_update_check(self, *, open_browser=False):
+        info = check_for_update()
+        if not info:
+            if open_browser:
+                self.tools_checked.emit(f"{APP_NAME} {__version__} is up to date.")
+            return
+        self.tools_checked.emit(format_update_message(info))
+        if open_browser:
+            if info.get("download_url"):
+                QDesktopServices.openUrl(QUrl(info["download_url"]))
+            elif info.get("page_url"):
+                QDesktopServices.openUrl(QUrl(info["page_url"]))
+
     def _run_tool_update(self):
         ok = update_runtime(force=True)
         versions = runtime_versions()
@@ -1356,8 +1380,8 @@ class MainWindow(QMainWindow):
         versions = runtime_versions()
         QMessageBox.about(
             self,
-            "About Reels Downloader",
-            "Reels Downloader\n\n"
+            f"About {APP_NAME}",
+            f"{APP_NAME} {__version__}\n\n"
             f"yt-dlp {versions['yt_dlp'] or 'missing'}\n"
             f"FFmpeg: {versions['ffmpeg'] or 'missing'}\n"
             f"Downloads: {self._output_root()}",
@@ -2604,12 +2628,14 @@ def run_gui(argv=None):
     app = QApplication.instance() or QApplication(argv)
     app.setStyle("Fusion")
     app.setStyleSheet(theme.stylesheet(theme.DEFAULT_DARK))
-    settings = QSettings("facebook-reels-downloader", "gui")
+    settings = QSettings(SETTINGS_ORG, "gui")
     if QSystemTrayIcon.isSystemTrayAvailable():
         app.setQuitOnLastWindowClosed(False)
     schedule_auto_update(settings.value("auto_update", True, bool))
     window = MainWindow(settings=settings)
     window.show()
+    if settings.value("check_app_updates", True, bool):
+        threading.Thread(target=window._run_app_update_check, daemon=True).start()
     return app.exec()
 
 

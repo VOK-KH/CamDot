@@ -19,7 +19,12 @@ from datetime import date, timedelta
 from urllib.parse import urlencode, urlparse
 
 from app.core.jobs import StopRequested, check_stop
-from app.core.runtime import channel_state_dir, default_output_root, resolve_ffmpeg
+from app.core.runtime import (
+    channel_state_dir,
+    default_output_root,
+    resolve_ffmpeg,
+    yt_dlp_command_prefix,
+)
 from app.core.urls import detect_platform
 
 DEFAULT_WORKERS = 4
@@ -607,7 +612,7 @@ def _yt_dlp_args(
     if platform in ("douyin", "kuaishou") and not cookies_browser and not cookies_file:
         cookies_browser = "chrome"
     args = [
-        sys.executable, "-m", "yt_dlp",
+        *yt_dlp_command_prefix(),
         "--newline",
         "--no-color",
         "--no-warnings",

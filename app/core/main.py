@@ -1,13 +1,13 @@
 """
-facebook-reels-downloader
+CamDot
 Download posts from Facebook, Instagram, TikTok, YouTube, and X.
 
 Usage:
-    uv run reels                 # PySide6 GUI
-    uv run reels --gui
-    uv run reels --cli           # interactive terminal prompts
-    uv run reels <name> "<post_or_feed_url>"
-    uv run reels <name> --from-csv output/<name>.csv
+    uv run camdot                 # PySide6 GUI
+    uv run camdot --gui
+    uv run camdot --cli           # interactive terminal prompts
+    uv run camdot <name> "<post_or_feed_url>"
+    uv run camdot <name> --from-csv output/<name>.csv
 """
 import os
 import sys
@@ -18,13 +18,13 @@ from app.core.runtime import schedule_auto_update
 from app.core.urls import clean_url, looks_shell_truncated, normalize_source_url
 
 USAGE = """Usage:
-  uv run reels                          (opens the PySide6 GUI)
-  uv run reels --gui
-  uv run reels --cli                    (interactive terminal prompts)
-  uv run reels <output_name> "<url>"
-  uv run reels <output_name> --from-csv <path_to_csv>
+  uv run camdot                          (opens the PySide6 GUI)
+  uv run camdot --gui
+  uv run camdot --cli                    (interactive terminal prompts)
+  uv run camdot <output_name> "<url>"
+  uv run camdot <output_name> --from-csv <path_to_csv>
 
-  uv run reels-gui                      (same as --gui)
+  uv run camdot-gui                      (same as --gui)
 
 Supported URLs:
   Facebook   single reel/video, or a page /reels tab (Chrome login)
@@ -46,7 +46,7 @@ shell leaves behind when it eats an unquoted "&". Continuing with the reels
 tab added back automatically.
 
 Next time, put the URL in quotes:
-  uv run reels <name> "<url>"
+  uv run camdot <name> "<url>"
 """
 
 
@@ -99,7 +99,7 @@ def main():
 
     if len(args) >= 2 and args[1] == "--from-csv":
         if len(args) < 3:
-            print("Please provide the CSV path: uv run reels <name> --from-csv <path>")
+            print("Please provide the CSV path: uv run camdot <name> --from-csv <path>")
             return 1
         csv_path = clean_url(args[2])
         if not os.path.isfile(csv_path):

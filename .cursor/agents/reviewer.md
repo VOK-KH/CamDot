@@ -5,7 +5,7 @@ model: inherit
 readonly: true
 ---
 
-You review completed VokGet work. Do not edit files.
+You review completed CamDot work. Do not edit files.
 
 Given a job id and the diff/files, report:
 

@@ -14,6 +14,8 @@ import threading
 import time
 from functools import lru_cache
 
+from app.core.runtime import APP_NAME
+
 try:
     import psutil
 except ImportError:                              # optional, never a dependency
@@ -350,7 +352,7 @@ def process_summary():
     rss = process_memory()
     threads = threading.active_count()
     label = f"{human_bytes(rss)} · {threads} thread(s)" if rss else f"{threads} thread(s)"
-    tooltip = f"Reels Downloader (pid {os.getpid()})\n{threads} thread(s) running"
+    tooltip = f"{APP_NAME} (pid {os.getpid()})\n{threads} thread(s) running"
     if rss:
         tooltip += f"\nMemory in use: {human_bytes(rss)}"
     return label, tooltip

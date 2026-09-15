@@ -7,9 +7,21 @@ import sys
 import threading
 import time
 
-APP_FOLDER_NAME = "Reels Downloader"
+APP_NAME = "CamDot"
+APP_FOLDER_NAME = APP_NAME
+APP_SLUG = "camdot"
+SETTINGS_ORG = APP_NAME
+GITHUB_REPO = "VOK-KH/CamDot"
 UPDATE_INTERVAL = 24 * 60 * 60
 UPDATE_PACKAGES = ("yt-dlp[default,curl-cffi]", "imageio-ffmpeg")
+
+
+def yt_dlp_command_prefix():
+    """Argv prefix for spawning yt-dlp (works in dev and PyInstaller builds)."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--yt-dlp"]
+    return [sys.executable, "-m", "yt_dlp"]
+
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 _update_thread = None
 _update_lock = threading.Lock()
@@ -61,7 +73,14 @@ def state_dir():
     """Per-user folder for small caches that are not downloads."""
     base = os.getenv("LOCALAPPDATA") if sys.platform == "win32" else None
     base = base or os.path.join(os.path.expanduser("~"), ".cache")
-    return os.path.join(base, "reels-downloader")
+    path = os.path.join(base, APP_SLUG)
+    legacy = os.path.join(base, "reels-downloader")
+    if not os.path.exists(path) and os.path.isdir(legacy):
+        try:
+            os.rename(legacy, path)
+        except OSError:
+            return legacy
+    return path
 
 
 def chrome_profile_dir():

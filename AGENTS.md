@@ -1,6 +1,6 @@
-# VokGet
+# CamDot
 
-Python download manager (PySide6 GUI + yt-dlp/selenium). Package lives in `app/`. Tests: `uv run python -m unittest discover -s tests -v`. GUI entry: `uv run reels`.
+Python download manager (PySide6 GUI + yt-dlp/selenium). Package lives in `app/`. Tests: `uv run python -m unittest discover -s tests -v`. GUI entry: `uv run camdot`.
 
 ## Agent org
 

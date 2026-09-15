@@ -1,0 +1,44 @@
+name: Build macOS Apple
+
+on:
+  workflow_dispatch:
+    inputs:
+      pyarmor:
+        description: Obfuscate with PyArmor before packaging
+        type: boolean
+        default: false
+
+env:
+  UV_LINK_MODE: copy
+
+jobs:
+  build-macos-arm:
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run tests
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Build CamDot
+        env:
+          PYARMOR: ${{ inputs.pyarmor && '1' || '0' }}
+        run: uv run python tools/deploy.py
+
+      - name: Export version
+        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamDot-v${{ env.VERSION }}-macOS-arm64
+          path: dist/CamDot-v${{ env.VERSION }}-macOS-arm64.dmg

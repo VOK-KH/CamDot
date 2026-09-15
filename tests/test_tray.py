@@ -77,7 +77,7 @@ class TrayTests(unittest.TestCase):
             "Exit",
         ):
             self.assertIn(name, titles)
-        self.assertIn("Reels Downloader", icon.toolTip())
+        self.assertIn("CamDot", icon.toolTip())
 
     def test_close_hides_when_tray_available(self):
         self.window._thread = FakeThread()

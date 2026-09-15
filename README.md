@@ -1,22 +1,19 @@
-# facebook-reels-downloader
-Download all reels on channel with a single command.
+# CamDot
 
+Download posts from Facebook, Instagram, TikTok, YouTube, X, and more with a
+JDownloader-style desktop app or a simple command line.
 
-Facebook Reels Downloader is simple script written with Python that let you download and save your favorite Facebook reels to your computer in HD(High Defination) quality or in SD(Standard Defination) quality.
-
-Depending upon the available quality of the video, downloader extracts HD quality and SD quality video links. You can choose to download whichever you want. However, in some cases, the only quality available is SD.
-
-All the videos will be in MPEG-4 Part 14 (MP4 😉) format.
-
-![fb_v](demo.gif)
+CamDot collects links from feeds and profiles, fills in titles and host icons,
+then downloads video, audio, and images with yt-dlp and Selenium when a site
+needs a logged-in browser session.
 
 ## Clone & Configure
 ```
 # clone the repo
-$ git clone https://github.com/duongxthanh/facebook-reels-downloader.git
+$ git clone https://github.com/VOK-KH/CamDot.git
 
-# change the working directory to facebook-reels-downloader
-$ cd facebook-reels-downloader
+# change the working directory to CamDot
+$ cd CamDot
 
 # install Python (if needed) and project dependencies with uv
 $ uv python install
@@ -33,7 +30,7 @@ $ uv sync
 To install or update everything explicitly:
 ```
 uv sync
-uv run reels-setup
+uv run camdot-setup
 ```
 The app checks for yt-dlp and FFmpeg updates once per day in a background
 thread. Disable it under **Settings → General**. Updates apply on the next
@@ -43,8 +40,8 @@ launch and do not delay startup.
 
 ### GUI (default)
 ```
-uv run reels
-uv run reels-gui
+uv run camdot
+uv run camdot-gui
 ```
 The window is a single table: one row per item with host icon, status, progress,
 title, size, speed and ETA. Files are named from the caption (or title), with
@@ -144,8 +141,8 @@ closing the window quits as before.
 The output name is derived from the page URL. Override it in
 **Settings → General**, which also contains the output folder, concurrency,
 theme, tray, and log options. By default files go to
-`Downloads/Reels Downloader/<name>/` on Windows and Linux, and
-`Documents/Reels Downloader/<name>/` on macOS. **Settings → Tools** can override Chrome (Facebook
+`Downloads/CamDot/<name>/` on Windows and Linux, and
+`Documents/CamDot/<name>/` on macOS. **Settings → Tools** can override Chrome (Facebook
 reels collection only) and FFmpeg, and can read cookies from your installed
 browser. Leave Chrome/FFmpeg blank to use automatic discovery and bundled
 FFmpeg.
@@ -204,16 +201,16 @@ Raise **Parallel** on a fast connection; lower it if Facebook starts throttling.
 ```
 # 1) Collect reels from a channel and download them
 #    ALWAYS put the URL in quotes (Facebook URLs contain "&").
-uv run reels <channel_name> "<channel_reel_url>"
+uv run camdot <channel_name> "<channel_reel_url>"
 
 # 2) Re-download later from the saved list (skips scraping)
-uv run reels <channel_name> --from-csv output/<channel_name>.csv
+uv run camdot <channel_name> --from-csv output/<channel_name>.csv
 
 # 3) Interactive prompts in the terminal (no GUI)
-uv run reels --cli
+uv run camdot --cli
 
 # 4) Same speed knobs as the GUI, in any mode
-uv run reels <channel_name> --from-csv output/<channel_name>.csv --workers 6 --fragments 16
+uv run camdot <channel_name> --from-csv output/<channel_name>.csv --workers 6 --fragments 16
 ```
 
 You can also run the module directly:
@@ -234,8 +231,8 @@ a **shell operator**, so an unquoted URL never reaches the script:
 
 Quotes fix all three:
 ```
-uv run reels jireel "https://www.facebook.com/profile.php?id=61554746552594&sk=reels_tab"
-uv run reels jireel "https://www.facebook.com/jireel/reels"
+uv run camdot jireel "https://www.facebook.com/profile.php?id=61554746552594&sk=reels_tab"
+uv run camdot jireel "https://www.facebook.com/jireel/reels"
 ```
 If a cut-off URL still gets through, the script now detects it, warns you, and
 puts the reels tab back before scraping.
@@ -250,7 +247,7 @@ Settings when a site asks you to log in.
 
 ## Troubleshooting
 - **`uv: command not found`** — install uv from https://docs.astral.sh/uv/getting-started/installation/ then run `uv sync` in this folder.
-- **`ModuleNotFoundError: No module named 'selenium'`** — dependencies were not installed into this project. From the repo root run `uv sync`, then always start the app with `uv run reels` (that uses the project environment).
+- **`ModuleNotFoundError: No module named 'selenium'`** — dependencies were not installed into this project. From the repo root run `uv sync`, then always start the app with `uv run camdot` (that uses the project environment).
 - **`[WinError 2] The system cannot find the file specified`** after
   *"Reached the bottom of the page."* — this was caused by `yt-dlp` not being on
   PATH. Fixed: the script now calls yt-dlp via `python -m yt_dlp`. Pull the latest
@@ -266,9 +263,9 @@ Settings when a site asks you to log in.
   kept, so the retry only fetches what is missing.
 - **`The ampersand (&) character is not allowed`** (PowerShell), or the URL gets
   cut at the `&` (cmd.exe, bash) — the URL was not quoted. Use
-  `uv run reels <channel> "<url>"`, or run `uv run reels` with no arguments
+  `uv run camdot <channel> "<url>"`, or run `uv run camdot` with no arguments
   and paste the URL at the prompt.
-- **`... is not recognized as the name of a cmdlet`** — the `uv run reels <channel>`
+- **`... is not recognized as the name of a cmdlet`** — the `uv run camdot <channel>`
   part is missing from the command; you ran the bare URL.
 - **`Not a Facebook URL` / unsupported site** — paste a Facebook, Instagram,
   TikTok, YouTube, or X URL. Instagram profiles and X timelines cannot be listed.

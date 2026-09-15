@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      pyarmor:
+        description: Obfuscate with PyArmor before packaging
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  UV_LINK_MODE: copy
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run python -m unittest discover -s tests -v
+      - name: Build CamDot
+        env:
+          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
+        run: uv run python tools/deploy.py
+      - name: Export version
+        shell: bash
+        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        with:
+          files: dist/CamDot-v${{ env.VERSION }}-Windows-x86_64.exe
+
+  build-macos-arm:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run python -m unittest discover -s tests -v
+      - name: Build CamDot
+        env:
+          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
+        run: uv run python tools/deploy.py
+      - name: Export version
+        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        with:
+          files: dist/CamDot-v${{ env.VERSION }}-macOS-arm64.dmg
+
+  build-macos-intel:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run python -m unittest discover -s tests -v
+      - name: Build CamDot
+        env:
+          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
+        run: uv run python tools/deploy.py
+      - name: Export version
+        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        with:
+          files: dist/CamDot-v${{ env.VERSION }}-macOS-x86_64.dmg
+
+  build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run python -m unittest discover -s tests -v
+      - name: Build CamDot
+        env:
+          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
+        run: uv run python tools/deploy.py
+      - name: Export version
+        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        with:
+          files: dist/CamDot-v${{ env.VERSION }}-Linux-${{ matrix.arch }}.tar.gz

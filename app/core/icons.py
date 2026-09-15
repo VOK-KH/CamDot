@@ -1,5 +1,6 @@
 """Load the artwork: recolored SVG icons plus the bundled PNG sets."""
 import os
+import sys
 from functools import lru_cache
 
 from PySide6.QtCore import QByteArray, Qt
@@ -17,6 +18,10 @@ _CANDIDATES = (
 
 
 def images_dir():
+    if getattr(sys, "frozen", False):
+        bundled = os.path.join(getattr(sys, "_MEIPASS", ""), "images")
+        if os.path.isdir(bundled):
+            return bundled
     for path in _CANDIDATES:
         if os.path.isdir(path):
             return path

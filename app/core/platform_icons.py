@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from PySide6.QtGui import QIcon, QPixmap
 
 from app.core import icons
-from app.core.runtime import util_cache_dir
+from app.core.runtime import APP_SLUG, util_cache_dir
 
 PLATFORM_KEYS = {
     "facebook": "platform-facebook",
@@ -77,7 +77,7 @@ def fetch_favicon(domain, dest_dir, opener=None):
         return dest
     url = f"https://{FAVICON_HOST}/ip3/{host}.ico"
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "reels-downloader"})
+        request = urllib.request.Request(url, headers={"User-Agent": APP_SLUG})
         fetch = opener or urllib.request.urlopen
         with fetch(request, timeout=5) as response:
             if urlparse(response.geturl()).hostname not in (FAVICON_HOST,):

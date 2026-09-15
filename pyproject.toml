@@ -1,7 +1,7 @@
 [project]
-name = "facebook-reels-downloader"
-version = "0.1.0"
-description = "Download posts from Facebook, Instagram, TikTok, YouTube, and X."
+name = "camdot"
+version = "0.2.0"
+description = "CamDot — download posts from Facebook, Instagram, TikTok, YouTube, and X."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -12,10 +12,14 @@ dependencies = [
     "imageio-ffmpeg>=0.6.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/VOK-KH/CamDot"
+Changelog = "https://github.com/VOK-KH/CamDot/releases"
+
 [project.scripts]
-reels = "app.main:main"
-reels-gui = "app.gui:main"
-reels-setup = "app.core.runtime:setup_main"
+camdot = "app.main:main"
+camdot-gui = "app.gui:main"
+camdot-setup = "app.core.runtime:setup_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -30,6 +34,12 @@ packages = ["app"]
 "images/icons" = "app/images/icons"
 "images/dialog" = "app/images/dialog"
 "images/botty" = "app/images/botty"
+
+[dependency-groups]
+dev = [
+    "pyarmor>=9.2.7",
+    "pyinstaller>=6.22.3",
+]
 
 [tool.uv]
 package = true
