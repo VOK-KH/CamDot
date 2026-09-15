@@ -15,15 +15,16 @@ class UpdateChecks(unittest.TestCase):
     def test_asset_for_platform(self):
         release = {
             "assets": [
-                {"name": "CamDot-v0.3.0-Windows-x86_64.exe", "browser_download_url": "https://x/win"},
+                {"name": "CamDot-v0.3.0-Windows-x86_64.exe", "browser_download_url": "https://x/portable"},
+                {"name": "CamDot-v0.3.0-Windows-x86_64-Setup.exe", "browser_download_url": "https://x/setup"},
                 {"name": "CamDot-v0.3.0-Linux-x86_64.tar.gz", "browser_download_url": "https://x/linux"},
             ]
         }
         with patch.object(updates, "platform_label", return_value="Windows"):
             with patch.object(updates, "arch_label", return_value="x86_64"):
                 name, url = updates.asset_for_platform(release)
-        self.assertEqual(name, "CamDot-v0.3.0-Windows-x86_64.exe")
-        self.assertEqual(url, "https://x/win")
+        self.assertEqual(name, "CamDot-v0.3.0-Windows-x86_64-Setup.exe")
+        self.assertEqual(url, "https://x/setup")
 
     def test_check_for_update_returns_none_when_current(self):
         payload = json.dumps({"tag_name": "v0.2.0", "assets": []}).encode()

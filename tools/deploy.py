@@ -39,6 +39,52 @@ def artifact_name(suffix):
     return f"CamDot-v{version()}-{platform_label()}-{arch_label()}{suffix}"
 
 
+def build_icon():
+    script = ROOT / "tools" / "build_icon.py"
+    print("Running:", sys.executable, script)
+    subprocess.run([sys.executable, str(script)], cwd=ROOT, check=True)
+
+
+def find_iscc():
+    candidates = []
+    for key in ("ProgramFiles(x86)", "PROGRAMFILES(X86)", "ProgramFiles", "PROGRAMFILES"):
+        base = os.environ.get(key)
+        if base:
+            candidates.append(Path(base) / "Inno Setup 6" / "ISCC.exe")
+    candidates.extend(
+        [
+            Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
+            Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+        ]
+    )
+    found = shutil.which("ISCC")
+    if found:
+        candidates.insert(0, Path(found))
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return ""
+
+
+def build_installer():
+    iscc = find_iscc()
+    if not iscc:
+        raise SystemExit("Inno Setup 6 (ISCC.exe) not found. Install from https://jrsoftware.org/isinfo.php")
+    iss = ROOT / "installer" / "CamDot.iss"
+    cmd = [
+        iscc,
+        f"/DMyAppVersion={version()}",
+        f"/DSourceDir={DIST}",
+        str(iss),
+    ]
+    print("Running:", " ".join(cmd))
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    out = DIST / artifact_name("-Setup.exe")
+    if not out.is_file():
+        raise SystemExit(f"Missing installer output: {out}")
+    return out
+
+
 def maybe_pyarmor():
     if os.environ.get("PYARMOR", "").lower() not in ("1", "true", "yes"):
         return
@@ -72,9 +118,9 @@ def package_windows():
     exe = DIST / "CamDot.exe"
     if not exe.is_file():
         raise SystemExit(f"Missing build output: {exe}")
-    out = DIST / artifact_name(".exe")
-    shutil.copy2(exe, out)
-    return out
+    portable = DIST / artifact_name(".exe")
+    shutil.copy2(exe, portable)
+    return build_installer()
 
 
 def package_linux():
@@ -122,6 +168,8 @@ def package_macos():
 
 def main():
     maybe_pyarmor()
+    if sys.platform == "win32":
+        build_icon()
     run_pyinstaller()
     if sys.platform == "win32":
         out = package_windows()

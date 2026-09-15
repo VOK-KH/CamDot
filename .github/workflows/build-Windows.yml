@@ -23,15 +23,29 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
       - name: Install dependencies
         run: uv sync --group dev
 
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
 
-      - name: Build CamDot
+      - name: Write Telegram secrets for build
+        if: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          @"
+          BOT_TOKEN = "$env:CAMDOT_TELEGRAM_BOT_TOKEN"
+          CHAT_ID = "$env:CAMDOT_TELEGRAM_CHAT_ID"
+          "@ | Set-Content -Encoding utf8 app/core/telegram_secrets.py
+
+      - name: Build CamDot installer
         env:
           PYARMOR: ${{ inputs.pyarmor && '1' || '0' }}
+          CAMDOT_TELEGRAM_BOT_TOKEN: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN }}
+          CAMDOT_TELEGRAM_CHAT_ID: ${{ secrets.CAMDOT_TELEGRAM_CHAT_ID }}
         run: uv run python tools/deploy.py
 
       - name: Export version
@@ -42,4 +56,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CamDot-v${{ env.VERSION }}-Windows-x86_64
-          path: dist/CamDot-v${{ env.VERSION }}-Windows-x86_64.exe
+          path: |
+            dist/CamDot-v${{ env.VERSION }}-Windows-x86_64-Setup.exe
+            dist/CamDot-v${{ env.VERSION }}-Windows-x86_64.exe

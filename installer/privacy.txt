@@ -1,0 +1,32 @@
+CamDot Privacy Policy
+
+Last updated: September 2026
+
+CamDot is a desktop download manager published by VOK-KH.
+
+What CamDot stores locally
+- Download lists, settings, and cached metadata on your computer
+- Optional browser profile data when you use Chrome login features
+- A random device identifier used to remember preferences on this machine
+
+What CamDot sends over the network
+- Requests needed to collect and download content from the URLs you provide
+- Optional update checks against GitHub Releases
+- Optional anonymous system reports (version, platform, crash summaries, and
+  feedback you submit) when reporting features are enabled in your build
+
+What CamDot does not do
+- CamDot does not create a user account inside the app
+- CamDot does not sell personal data
+- CamDot does not access URLs unless you paste, collect, or queue them
+
+Your choices
+- You control which links are processed
+- You can avoid browser login features if you do not want CamDot to use cookies
+- You may uninstall CamDot at any time from Windows Settings or the Start menu
+
+Contact
+Project page: https://github.com/VOK-KH/CamDot
+Issues: https://github.com/VOK-KH/CamDot/issues
+
+By continuing installation you acknowledge this privacy policy.

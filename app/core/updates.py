@@ -56,7 +56,12 @@ def _request_json(url, timeout=15):
 
 def asset_for_platform(release):
     needle = f"{platform_label()}-{arch_label()}"
-    for asset in release.get("assets", []):
+    assets = release.get("assets", [])
+    for asset in assets:
+        name = asset.get("name", "")
+        if needle in name and "-Setup" in name:
+            return name, asset.get("browser_download_url", "")
+    for asset in assets:
         name = asset.get("name", "")
         if needle in name:
             return name, asset.get("browser_download_url", "")

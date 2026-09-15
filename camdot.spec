@@ -5,6 +5,8 @@ from pathlib import Path
 
 block_cipher = None
 root = Path(SPECPATH)
+icon_file = root / "images" / "icons" / "camdot.ico"
+win_icon = str(icon_file) if icon_file.is_file() else None
 entry = str(root / "tools" / "camdot_entry.py")
 obf_entry = root / "obf" / "app"
 if obf_entry.is_dir():
@@ -16,7 +18,7 @@ a = Analysis(
     binaries=[],
     datas=[(str(root / "images"), "images")],
     hiddenimports=[
-        "app.core.telegram_secrets",
+        *(["app.core.telegram_secrets"] if (root / "app" / "core" / "telegram_secrets.py").is_file() else []),
         "yt_dlp",
         "yt_dlp.extractor",
         "yt_dlp.postprocessor",
@@ -91,4 +93,5 @@ else:
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
+        icon=win_icon,
     )

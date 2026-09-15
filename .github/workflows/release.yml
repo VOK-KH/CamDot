@@ -27,11 +27,23 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+      - name: Install Inno Setup
+        run: choco install innosetup -y
       - run: uv sync --group dev
       - run: uv run python -m unittest discover -s tests -v
-      - name: Build CamDot
+      - name: Write Telegram secrets for build
+        if: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          @"
+          BOT_TOKEN = "$env:CAMDOT_TELEGRAM_BOT_TOKEN"
+          CHAT_ID = "$env:CAMDOT_TELEGRAM_CHAT_ID"
+          "@ | Set-Content -Encoding utf8 app/core/telegram_secrets.py
+      - name: Build CamDot installer
         env:
           PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
+          CAMDOT_TELEGRAM_BOT_TOKEN: ${{ secrets.CAMDOT_TELEGRAM_BOT_TOKEN }}
+          CAMDOT_TELEGRAM_CHAT_ID: ${{ secrets.CAMDOT_TELEGRAM_CHAT_ID }}
         run: uv run python tools/deploy.py
       - name: Export version
         shell: bash
@@ -39,72 +51,25 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         with:
-          files: dist/CamDot-v${{ env.VERSION }}-Windows-x86_64.exe
+          files: |
+            dist/CamDot-v${{ env.VERSION }}-Windows-x86_64-Setup.exe
+            dist/CamDot-v${{ env.VERSION }}-Windows-x86_64.exe
 
+  # macOS and Linux packaging will be enabled in a later release.
   build-macos-arm:
+    if: false
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --group dev
-      - run: uv run python -m unittest discover -s tests -v
-      - name: Build CamDot
-        env:
-          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
-        run: uv run python tools/deploy.py
-      - name: Export version
-        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
-        with:
-          files: dist/CamDot-v${{ env.VERSION }}-macOS-arm64.dmg
+      - run: echo "macOS builds are disabled for now"
 
   build-macos-intel:
+    if: false
     runs-on: macos-13
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --group dev
-      - run: uv run python -m unittest discover -s tests -v
-      - name: Build CamDot
-        env:
-          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
-        run: uv run python tools/deploy.py
-      - name: Export version
-        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
-        with:
-          files: dist/CamDot-v${{ env.VERSION }}-macOS-x86_64.dmg
+      - run: echo "macOS builds are disabled for now"
 
   build-linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
+    if: false
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --group dev
-      - run: uv run python -m unittest discover -s tests -v
-      - name: Build CamDot
-        env:
-          PYARMOR: ${{ github.event_name == 'workflow_dispatch' && inputs.pyarmor && '1' || '0' }}
-        run: uv run python tools/deploy.py
-      - name: Export version
-        run: echo "VERSION=$(uv run python -c 'import app; print(app.__version__)')" >> "$GITHUB_ENV"
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
-        with:
-          files: dist/CamDot-v${{ env.VERSION }}-Linux-${{ matrix.arch }}.tar.gz
+      - run: echo "Linux builds are disabled for now"

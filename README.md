@@ -35,9 +35,9 @@ Pre-built packages are published on [GitHub Releases](https://github.com/VOK-KH/
 
 | Platform | File |
 |---|---|
-| Windows x86_64 | `CamDot-v{version}-Windows-x86_64.exe` |
-| Linux x86_64 / arm64 | `CamDot-v{version}-Linux-{arch}.tar.gz` |
-| macOS arm64 / x86_64 | `CamDot-v{version}-macOS-{arch}.dmg` |
+| Windows x86_64 (installer) | `CamDot-v{version}-Windows-x86_64-Setup.exe` |
+| Windows x86_64 (portable) | `CamDot-v{version}-Windows-x86_64.exe` |
+| Linux / macOS | Coming later |
 
 The app checks for updates on startup and from **Tools → Check for app updates**.
 
@@ -149,8 +149,8 @@ CI builds run on GitHub Actions. To publish a new version:
 2. Commit, tag, and push:
 
     ```shell
-    git tag v0.2.0
-    git push origin v0.2.0
+    git tag v0.2.1
+    git push origin v0.2.1
     ```
 
 3. The **Release** workflow builds all platforms and uploads assets to [GitHub Releases](https://github.com/VOK-KH/CamDot/releases).

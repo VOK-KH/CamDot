@@ -1,0 +1,35 @@
+CamDot Terms of Use
+
+Copyright (c) 2025-2026 VOK-KH. All rights reserved.
+
+By installing or using CamDot you agree to these terms.
+
+1. License
+CamDot is provided under the MIT License. You may use, copy, modify, and
+distribute the software subject to the license included with the source code.
+
+2. Acceptable use
+Use CamDot only for content you have the legal right to access and download.
+You are responsible for complying with the terms of each website and with
+applicable copyright and privacy laws.
+
+3. Third-party services
+CamDot may open websites in a browser, read cookies you choose to provide,
+and download media from supported hosts. Those services are operated by
+third parties and are not controlled by VOK-KH.
+
+4. No warranty
+CamDot is provided "as is" without warranty of any kind. VOK-KH does not
+guarantee uninterrupted operation, compatibility with every site, or that
+downloads will always succeed.
+
+5. Limitation of liability
+To the maximum extent permitted by law, VOK-KH is not liable for any indirect,
+incidental, special, or consequential damages arising from your use of
+CamDot.
+
+6. Updates
+CamDot may check for application and component updates. Update availability
+depends on network access and published releases.
+
+If you do not agree to these terms, do not install or use CamDot.
