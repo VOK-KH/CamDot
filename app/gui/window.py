@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 
 from PySide6.QtCore import (
     QEvent,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -56,7 +58,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from app.core import icons, store, sysinfo, theme
+from app.core import icons, store, sysinfo, telegram_notify, theme
 from app.core.collect import cookies_from_browser_value, write_entries_csv
 from app.core.cookies import write_netscape_cookies
 from app.core.download import (
@@ -67,9 +69,10 @@ from app.gui.constants import (
     COLUMN_WIDTHS,
     EDGE_CURSORS,
     FIXED_COLUMNS,
-    FLOAT_MARGIN,
     FRAME_MARGIN,
     GRABBER_HIDDEN,
+    GRAB_SYNC_CHUNK,
+    GRAB_SYNC_MS,
     HIDDEN_BY_DEFAULT,
     PINNED_COLUMNS,
     STATS_INTERVAL_MS,
@@ -95,16 +98,21 @@ from app.core.model import (
     COL_CHECK,
     COL_FILE,
     COL_HOST,
+    COL_ICON,
     COL_ID,
     COL_INDEX,
     COL_PROGRESS,
     COL_TITLE,
     COLUMNS,
+    MEDIA_KINDS,
     STATUS_LABELS,
     STATUSES,
     ReelFilterProxy,
     ReelModel,
+    extract_package_rows,
     format_eta,
+    IMAGE_QUALITIES,
+    output_folder,
 )
 from app import __version__
 from app.core.fonts import setup_app_font
@@ -140,6 +148,7 @@ class MainWindow(QMainWindow):
     gpu_detected = Signal(str, str)
     app_update_found = Signal(object)
     app_update_uptodate = Signal()
+    notify_poll_done = Signal(object)
     app_update_downloaded = Signal(str, object)
     open_url = Signal(str)
 
@@ -155,7 +164,14 @@ class MainWindow(QMainWindow):
         self.resize(1180, 680)
         # No native title bar: the menu strip carries the window controls, and
         # the outermost FRAME_MARGIN pixels resize the window (see _frame_event).
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.setMouseTracking(True)
         self._drag_origin = None
         self._frame_cursor = None
@@ -171,6 +187,7 @@ class MainWindow(QMainWindow):
         self._grab_aborted = False
         self._grab_manual = False
         self._dark = dark
+        self._primary = theme.DEFAULT_PRIMARY
         self._settings = settings or gui_settings()
         self._columns_locked = self._settings.value("columns_locked", False, bool)
         self._h_scrollbar = False
@@ -179,6 +196,7 @@ class MainWindow(QMainWindow):
         self.grab_autostart = False
         self._pending_auto_confirm = False
         self._quitting = False
+        self._grab_sync = deque()
 
         self.model = ReelModel(self)
         self.proxy = ReelFilterProxy(self)
@@ -238,18 +256,23 @@ class MainWindow(QMainWindow):
         self._update_counter()
         self._start_stats()
         self._sync_app_update_timer()
+        self.notify_poll_done.connect(self._on_notify_poll_done)
+        self._notify_timer = QTimer(self)
+        self._notify_timer.setInterval(20000)
+        self._notify_timer.timeout.connect(self._poll_telegram_notify)
+        self._notify_busy = False
+        self._sync_notify_timer()
         if self.source_edit.text().strip():
             self._load_saved_list(self._channel())
         self.grab_panel = GrabberPanel(self)
         self.grab_panel.aborted.connect(self._cancel_grabber)
-        geo = self._settings.value("grab_monitor")
-        if geo:
-            self.grab_panel.restoreGeometry(geo)
-            self.grab_panel.user_placed = True
         self._grab_close_timer = QTimer(self)
         self._grab_close_timer.setSingleShot(True)
         self._grab_close_timer.setInterval(2500)
         self._grab_close_timer.timeout.connect(self._hide_grab_panel)
+        self._grab_sync_timer = QTimer(self)
+        self._grab_sync_timer.setInterval(GRAB_SYNC_MS)
+        self._grab_sync_timer.timeout.connect(self._flush_grab_chunk)
         QGuiApplication.clipboard().dataChanged.connect(self._on_clipboard_changed)
         self.tray = TrayController(self)
         self._sync_close_tooltip()
@@ -303,7 +326,7 @@ class MainWindow(QMainWindow):
         self.source_edit = self.source_combo.lineEdit()
         self.source_edit.setClearButtonEnabled(True)
         self.source_edit.setPlaceholderText("Paste a post, channel, or playlist URL")
-        self.collect_btn = self._pill("Extract", "collect", "blue", self._start_collect)
+        self.collect_btn = self._pill("Extract", "collect", self._start_collect)
         self.collect_btn.setToolTip("Analyze this URL into the Grabber table")
         self.collect_btn.hide()
 
@@ -315,6 +338,7 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 4, 0, 0)
         col.setSpacing(6)
         self.grab_table = self._make_table(self.grab_proxy, GRABBER_HIDDEN)
+        self.grab_table.clicked.connect(self._toggle_grab_package)
         col.addWidget(self.grab_table, 1)
         self.extract_loader = ExtractLoader(page)
         self.extract_loader.aborted.connect(self._cancel)
@@ -388,7 +412,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
-        self.min_btn = self._icon_button("win-minimize", "Minimise", self.showMinimized)
+        self.min_btn = self._icon_button("win-minimize", "Minimise to the taskbar", self.showMinimized)
         self.max_btn = self._icon_button("win-maximize", "Maximise", self._toggle_maximized)
         self.close_btn = self._icon_button("win-close", "Quit", self.close)
         for button in (self.min_btn, self.max_btn, self.close_btn):
@@ -415,12 +439,6 @@ class MainWindow(QMainWindow):
             return
         if hasattr(self, "max_btn"):
             self._sync_window_controls()
-        if (
-            self._close_to_tray_enabled()
-            and not self._quitting
-            and self.windowState() & Qt.WindowState.WindowMinimized
-        ):
-            QTimer.singleShot(0, self.hide)
 
     # ----------------------------------------------------------- frameless
 
@@ -547,6 +565,7 @@ class MainWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setShowGrid(True)
+        table.setIconSize(QSize(16, 16))
         table.setDragEnabled(False)
         table.setAcceptDrops(False)
         table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -808,7 +827,7 @@ class MainWindow(QMainWindow):
         row.setSpacing(6)
 
         self.add_new_btn = self._bar_pill(
-            "Add New Links", "plus", "blue", self._add_links, self._build_add_menu())
+            "Add New Links", "plus", self._add_links, self._build_add_menu())
         self.add_new_btn.setToolTip("Paste posts, channels, or playlists, one per line (F5)")
         self.clip_toggle = self._tool_button(
             "link", "Watch the clipboard for links (Ctrl+G)",
@@ -826,13 +845,13 @@ class MainWindow(QMainWindow):
         row.addWidget(self.counter)
 
         self.continue_btn = self._bar_pill(
-            "Continue login", "login", "orange", self._continue_login)
-        self.cancel_btn = self._bar_pill("Cancel", "cancel", "red", self._cancel)
+            "Continue login", "login", self._continue_login)
+        self.cancel_btn = self._bar_pill("Cancel", "cancel", self._cancel)
         self.add_btn = self._bar_pill(
-            "Add to downloads", "download", "green", self._add_to_downloads)
+            "Add to downloads", "download", self._add_to_downloads)
         self.add_btn.setToolTip("Move Grabber rows into the Download tab")
         self.download_btn = self._bar_pill(
-            "Start all Downloads", "play", "green",
+            "Start all Downloads", "play",
             lambda _=False: self._start_download(), self._build_start_menu())
         self.download_btn.setToolTip(
             "Download remaining items. Finished files are skipped; partial files resume."
@@ -895,6 +914,40 @@ class MainWindow(QMainWindow):
         if panel is None:
             return
         self._settings.setValue("views_kinds", ",".join(sorted(panel.checked_kinds())))
+        for key, path in panel.kind_folders().items():
+            self._settings.setValue(f"views_folder_{key}", path)
+        self._apply_kind_folders_to_models()
+
+    def _kind_folders(self):
+        panel = getattr(self, "views", None)
+        return panel.kind_folders() if panel is not None else {}
+
+    def _stamp_entry(self, item):
+        data = dict(item) if isinstance(item, dict) else {"url": item}
+        root = self._output_root()
+        if not str(data.get("save_dir") or "").strip():
+            data["save_dir"] = root
+        variant = data.get("variant") or ""
+        dest = str(self._kind_folders().get(variant) or "").strip()
+        if variant and dest:
+            data["save_dir"] = dest
+        return data
+
+    def _apply_kind_folders_to_models(self):
+        folders = self._kind_folders()
+        root = self._output_root()
+        for model in (getattr(self, "model", None), getattr(self, "grab_model", None)):
+            if model is None:
+                continue
+            for row in range(model.rowCount()):
+                reel = model.reel_at(row)
+                if not reel.variant:
+                    if not reel.save_dir:
+                        model.update_reel(reel.url, save_dir=root, match_variant="")
+                    continue
+                dest = str(folders.get(reel.variant) or "").strip()
+                if dest and dest != reel.save_dir:
+                    model.update_reel(reel.url, save_dir=dest, match_variant=reel.variant)
 
     def _apply_views_filter(self):
         panel = getattr(self, "views", None)
@@ -990,6 +1043,12 @@ class MainWindow(QMainWindow):
             customize.triggered.connect(self._open_settings)
 
     def _add_grabber_option_actions(self, menu):
+        self._context_action(menu, "Add New Links", self._add_links, "plus")
+        self._context_action(menu, "Paste Links", self._add_from_clipboard, "link")
+        self._context_action(menu, "Import list…", self._import_list, "plus")
+        self._context_action(
+            menu, "Start all Downloads", self._start_all_downloads, "play")
+        menu.addSeparator()
         top = menu.addAction("Add at top")
         top.setCheckable(True)
         top.setChecked(self.grab_add_at_top)
@@ -1002,6 +1061,9 @@ class MainWindow(QMainWindow):
         start.setCheckable(True)
         start.setChecked(self.grab_autostart)
         start.toggled.connect(self._set_grab_autostart)
+        menu.addSeparator()
+        self._context_action(menu, "Sort by Hoster", self._sort_by_hoster)
+        menu.addMenu(self._cleanup_menu())
 
     def _add_download_option_widgets(self, menu):
         get = self._settings.value
@@ -1067,6 +1129,115 @@ class MainWindow(QMainWindow):
     def _set_grab_autostart(self, enabled):
         self.grab_autostart = bool(enabled)
         self._settings.setValue("grab_autostart", self.grab_autostart)
+
+    def _other_grabber_menu(self):
+        menu = QMenu("Other", self)
+        top = menu.addAction("Add at top")
+        top.setCheckable(True)
+        top.setChecked(self.grab_add_at_top)
+        top.toggled.connect(self._set_grab_add_at_top)
+        confirm = menu.addAction("Auto confirm")
+        confirm.setCheckable(True)
+        confirm.setChecked(self.grab_auto_confirm)
+        confirm.toggled.connect(self._set_grab_auto_confirm)
+        start = menu.addAction("Autostart Download")
+        start.setCheckable(True)
+        start.setChecked(self.grab_autostart)
+        start.toggled.connect(self._set_grab_autostart)
+        menu.addSeparator()
+        expand = menu.addAction("Expand all packages")
+        expand.triggered.connect(lambda _=False: self._set_grab_packages_expanded(True))
+        collapse = menu.addAction("Collapse all packages")
+        collapse.triggered.connect(lambda _=False: self._set_grab_packages_expanded(False))
+        return menu
+
+    def _cleanup_menu(self, table=None):
+        menu = QMenu("Clean Up...", self)
+        if table is getattr(self, "grab_table", None):
+            model = self.grab_model
+        elif table is getattr(self, "table", None):
+            model = self.model
+        else:
+            model, _proxy, table = self._pack()
+        selected = bool(
+            table is not None
+            and table.selectionModel()
+            and table.selectionModel().selectedRows()
+        )
+        act_sel = menu.addAction("Delete selected links")
+        act_sel.setEnabled(selected)
+        act_sel.triggered.connect(lambda _=False: self._cleanup_links(True))
+        act_all = menu.addAction("Delete all links")
+        act_all.setEnabled(model.rowCount() > 0)
+        act_all.triggered.connect(lambda _=False: self._cleanup_links(False))
+        return menu
+
+    def _sort_by_hoster(self):
+        _model, _proxy, table = self._pack()
+        if table is not None:
+            table.sortByColumn(COL_HOST, Qt.SortOrder.AscendingOrder)
+
+    def _start_all_downloads(self):
+        """Add Grabber rows if needed, then start every remaining download."""
+        if self.tabs.currentIndex() == TAB_GRABBER and self.grab_model.rowCount():
+            was = self.grab_autostart
+            self.grab_autostart = False
+            try:
+                self._add_to_downloads()
+            finally:
+                self.grab_autostart = was
+        self._start_download(ignore_checks=True)
+
+    def _confirm_cleanup(self, action, count, remaining):
+        if self._settings.value("cleanup_skip_confirm", False, bool):
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("Are you sure?")
+        box.setText(
+            f"Do you really want to perform this clean up action:\n{action}?"
+        )
+        box.setInformativeText(
+            f"Delete {count} link(s) — {remaining} link(s) remaining."
+        )
+        box.setIconPixmap(icons.art("botty", "robot_del", 64))
+        skip = QCheckBox("Don't show this again")
+        box.setCheckBox(skip)
+        cont = box.addButton("Continue", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cont)
+        box.exec()
+        if box.clickedButton() is not cont:
+            return False
+        if skip.isChecked():
+            self._settings.setValue("cleanup_skip_confirm", True)
+        return True
+
+    def _cleanup_links(self, selected=True):
+        model, _proxy, _table = self._pack()
+        if selected:
+            reels = self._selected_reels()
+            action = "Delete Selected Links"
+        else:
+            reels = [model.reel_at(row) for row in range(model.rowCount())]
+            action = "Delete All Links"
+        if not reels:
+            return
+        remaining = max(0, model.rowCount() - len(reels))
+        if not self._confirm_cleanup(action, len(reels), remaining):
+            return
+        if model is self.model:
+            self._delete_reel_files(
+                reels,
+                "Delete file?",
+                "Remove from the list.\n\nAlso delete the file(s) from disk?",
+            )
+        removed = model.remove_urls([reel.url for reel in reels])
+        if removed:
+            self._append_log(f"Removed {removed} item(s) from the list.")
+            if model is self.model:
+                self._schedule_store()
+        self._sync_header_check()
+        self._update_counter()
 
     def _add_from_clipboard(self):
         """Read the clipboard once, without turning the watcher on."""
@@ -1237,7 +1408,7 @@ class MainWindow(QMainWindow):
         # The logo rides in the menu strip's left corner, ahead of File.
         self.logo = QLabel()
         self.logo.setObjectName("logo")
-        self.logo.setPixmap(icons.icon("app", "#1877f2", 64).pixmap(18, 18))
+        self.logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(18, 18))
         self.logo.setContentsMargins(6, 0, 4, 0)
         bar.setCornerWidget(self.logo, Qt.Corner.TopLeftCorner)
         self.win_controls = self._build_window_controls()
@@ -1542,9 +1713,12 @@ class MainWindow(QMainWindow):
         if not entries:
             alert(self, "warning", "Import failed", "No URLs were found in the file.")
             return
-        self.model.add_entries(entries)
+        model, _proxy, _table = self._pack()
+        model.add_entries(entries)
         self._append_log(f"Imported {len(entries)} item(s) from {path}")
         self._update_counter()
+        if model is self.model:
+            self._schedule_store()
 
     def _retry_failed_items(self):
         count = self.model.requeue_failed()
@@ -1612,23 +1786,21 @@ class MainWindow(QMainWindow):
         button.setCheckable(checkable)
         return button
 
-    def _pill(self, text, name, accent, slot):
+    def _pill(self, text, name, slot):
         button = QPushButton(text)
         button.setProperty("iconName", name)
-        if accent:
-            button.setProperty("accent", accent)
+        button.setProperty("pill", True)
         button.clicked.connect(slot)
         return button
 
-    def _bar_pill(self, text, name, accent, slot, menu=None):
+    def _bar_pill(self, text, name, slot, menu=None):
         """A labelled bottom-bar button; with `menu` it splits into button + arrow."""
         button = QToolButton()
         button.setText(text)
         button.setProperty("iconName", name)
-        if accent:
-            button.setProperty("accent", accent)
+        button.setProperty("pill", True)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        button.setIconSize(QSize(15, 15))
+        button.setIconSize(QSize(13, 13))
         button.clicked.connect(slot)
         if menu is not None:
             button.setMenu(menu)
@@ -1638,7 +1810,7 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------------- rows
 
     def set_urls(self, urls):
-        self.model.set_urls(urls)
+        self.model.set_urls([self._stamp_entry(item) for item in urls])
         self.table.sortByColumn(COL_INDEX, Qt.SortOrder.AscendingOrder)
         self.table.scrollToTop()
         self._sync_header_check()
@@ -1647,21 +1819,108 @@ class MainWindow(QMainWindow):
 
     def add_grab_urls(self, urls):
         """Append extracted items to the Grabber table, skipping duplicates."""
-        urls = list(urls)
-        added = self.grab_model.add_entries(urls, prepend=self.grab_add_at_top)
+        return self._insert_grab_urls(urls, light=False)
+
+    @Slot(list)
+    def _enqueue_grab_urls(self, urls):
+        """Queue collect results and paint them in chunks so the table stays responsive."""
+        if not urls:
+            return
+        self._grab_sync.extend(urls)
+        if self._grab_sync_timer.isActive():
+            return
+        self._flush_grab_chunk()
+        if self._grab_sync:
+            self._grab_sync_timer.start()
+
+    def _flush_grab_chunk(self):
+        if not self._grab_sync:
+            self._grab_sync_timer.stop()
+            self._finish_grab_sync()
+            return
+        chunk = []
+        while self._grab_sync and len(chunk) < GRAB_SYNC_CHUNK:
+            chunk.append(self._grab_sync.popleft())
+        self._insert_grab_urls(chunk, light=True)
+        if self._grab_sync:
+            return
+        self._grab_sync_timer.stop()
+        self._finish_grab_sync()
+        if self._thread is None:
+            self._apply_pending_auto_confirm()
+
+    def _drain_grab_sync(self):
+        """Paint every queued package now (end of a collect run, or tests)."""
+        self._grab_sync_timer.stop()
+        while self._grab_sync:
+            chunk = []
+            while self._grab_sync and len(chunk) < GRAB_SYNC_CHUNK:
+                chunk.append(self._grab_sync.popleft())
+            self._insert_grab_urls(chunk, light=True)
+        self._finish_grab_sync()
+
+    def _finish_grab_sync(self):
+        self.grab_table.sortByColumn(COL_INDEX, Qt.SortOrder.AscendingOrder)
+        self.grab_proxy.invalidate()
+        self._sync_header_check()
+        self._update_counter()
+
+    def _insert_grab_urls(self, urls, light=False):
+        known = set(self.grab_model.urls())
+        requested = []
+        for item in urls:
+            url = item.get("url") if isinstance(item, dict) else item
+            if url and url not in requested:
+                requested.append(url)
+        dupes = sum(1 for url in requested if url in known)
+        expanded = []
+        folders = self._kind_folders()
+        for item in urls:
+            expanded.extend(extract_package_rows(self._stamp_entry(item), kind_folders=folders))
+        table = self.grab_table
+        table.setUpdatesEnabled(False)
+        try:
+            added_rows = self.grab_model.add_entries(expanded, prepend=self.grab_add_at_top)
+        finally:
+            table.setUpdatesEnabled(True)
+        added = len(set(self.grab_model.urls()) - known)
         if self._grabber_job or self._collecting:
             self._grab_added += added
-            self._grab_dupes += len(urls) - added
+            self._grab_dupes += dupes
             self._show_grab_panel(
                 "Analyzing…" if self._grabber_job else "Extracting…"
             )
             self._sync_extract_loader()
-        if added:
+        if added_rows and not light:
             self.grab_table.sortByColumn(COL_INDEX, Qt.SortOrder.AscendingOrder)
+            self.grab_proxy.invalidate()
             self._sync_header_check()
             self._update_counter()
             self._append_log(f"Grabber listed {added} item(s).")
+        elif added_rows and light and self.tabs.currentIndex() == TAB_GRABBER:
+            self.counter.setText(f"{self.grab_model.package_count()} listed")
         return added
+
+    def _toggle_grab_package(self, index):
+        """Expand or collapse a collected package when its Name cell is clicked."""
+        if not index.isValid() or index.column() not in (COL_TITLE, COL_ICON):
+            return
+        src = self.grab_proxy.mapToSource(index)
+        reel = self.grab_model.reel_at(src.row())
+        if reel.variant:
+            return
+        if not any(
+            self.grab_model.reel_at(row).url == reel.url
+            and self.grab_model.reel_at(row).variant
+            for row in range(self.grab_model.rowCount())
+        ):
+            return
+        self.grab_model.toggle_expanded(reel.url)
+        self.grab_proxy.invalidate()
+
+    def _set_grab_packages_expanded(self, expanded):
+        if self.grab_model.set_all_expanded(expanded):
+            self.grab_proxy.invalidate()
 
     def add_urls(self, urls):
         return self.add_grab_urls(urls)
@@ -1792,7 +2051,7 @@ class MainWindow(QMainWindow):
         self._refresh_overview()
         self._refresh_views()
         if hasattr(self, "tabs") and self.tabs.currentIndex() == TAB_GRABBER:
-            total = self.grab_model.rowCount()
+            total = self.grab_model.package_count()
             if self._collecting:
                 self.counter.setText(f"{total} listed")
                 self.counter.setToolTip("Links extracted so far into Grabber")
@@ -1823,12 +2082,34 @@ class MainWindow(QMainWindow):
         on_list = self.model.apply_event(url, event)
         if (on_grab or on_list) and event.get("status") not in (None, "downloading"):
             self._update_counter()
+        if event.get("filepath") or event.get("status") == "done":
+            self._sync_output_tree(url)
         status = event.get("status")
         if on_list:
             if status in ("done", "failed", "cancelled"):
                 self._flush_store()
             else:
                 self._schedule_store()
+
+    def _sync_output_tree(self, url):
+        """Show the save folder as the parent and files in that folder as children."""
+        for model, expand in ((self.model, True), (self.grab_model, False)):
+            reel = model.package_reel(url)
+            if reel is None:
+                continue
+            folder = self._folder_for_reel(reel)
+            files = [
+                path for path in store.list_output_files(folder, reel.rid, reel.filepath)
+                if os.path.isfile(path)
+                and not path.endswith((".part", ".ytdl"))
+            ]
+            if not files:
+                continue
+            model.attach_output_files(url, folder, files, expand=expand)
+            if expand:
+                self.proxy.invalidate()
+            else:
+                self.grab_proxy.invalidate()
 
     def _selected_reels(self):
         model, proxy, table = self._pack()
@@ -1876,7 +2157,11 @@ class MainWindow(QMainWindow):
             if grabber:
                 self._context_action(
                     menu, "Add to downloads", self._add_to_downloads, "download")
-                menu.addSeparator()
+                menu.addMenu(self._variant_menu())
+            else:
+                self._context_action(
+                    menu, "Start selected", self._start_selected, "play")
+            menu.addSeparator()
             self._context_action(menu, "Copy URL", self._copy_urls, "copy")
             self._context_action(menu, "Copy caption", self._copy_captions, "copy")
             open_label = "Open in browser" if grabber else "Open reel in browser"
@@ -1886,6 +2171,8 @@ class MainWindow(QMainWindow):
                     menu, "Show downloaded file", self._reveal_selected, "folder")
                 self._context_action(
                     menu, "Open directory", self._open_directory_selected, "folder")
+            menu.addSeparator()
+            menu.addMenu(self._properties_menu())
             menu.addSeparator()
             self._context_action(
                 menu, "Check selected", lambda _=False: self._set_selected_checks(True))
@@ -1898,20 +2185,156 @@ class MainWindow(QMainWindow):
                     menu, "Move up", lambda _=False: self._move_selected(-1), "move-up")
                 self._context_action(
                     menu, "Move down", lambda _=False: self._move_selected(1), "move-down")
-            menu.addSeparator()
-            self._context_action(menu, "Remove from list", self._remove_selected, "clear")
-            if model.rowCount():
-                self._context_action(
-                    menu, "Remove all from list", self._remove_all, "clear")
+                menu.addSeparator()
+                self._context_action(menu, "Sort by Hoster", self._sort_by_hoster)
+                menu.addMenu(self._other_grabber_menu())
+                menu.addMenu(self._cleanup_menu(table))
+            else:
+                menu.addSeparator()
+                self._context_action(menu, "Remove from list", self._remove_selected, "clear")
+                if model.rowCount():
+                    self._context_action(
+                        menu, "Remove all from list", self._remove_all, "clear")
         else:
             if grabber:
-                self._context_action(menu, "Add new links", self._add_links, "plus")
+                self._context_action(menu, "Add New Links", self._add_links, "plus")
+                self._context_action(menu, "Paste Links", self._add_from_clipboard, "link")
+                self._context_action(menu, "Import list…", self._import_list, "plus")
                 self._context_action(
-                    menu, "Paste from clipboard", self._add_from_clipboard, "link")
-            if model.rowCount():
+                    menu, "Start all Downloads", self._start_all_downloads, "play")
+                menu.addSeparator()
+                menu.addMenu(self._properties_menu())
+                sort = self._context_action(menu, "Sort by Hoster", self._sort_by_hoster)
+                sort.setEnabled(model.rowCount() > 0)
+                open_link = self._context_action(
+                    menu, "Open in browser", self._open_selected, "external")
+                open_link.setEnabled(False)
+                menu.addSeparator()
+                menu.addMenu(self._other_grabber_menu())
+                menu.addMenu(self._cleanup_menu(table))
+                self._context_action(menu, "Settings…", self._open_settings, "settings")
+            elif model.rowCount():
                 self._context_action(
                     menu, "Remove all from list", self._remove_all, "clear")
         return menu
+
+    def _properties_menu(self):
+        menu = QMenu("Properties", self)
+        self._context_action(menu, "Rename…", self._rename_selected)
+        self._context_action(
+            menu, "Set download directory…", self._set_download_directory, "folder")
+        self._context_action(menu, "Set comment…", self._set_comment_selected)
+        menu.addSeparator()
+        self._context_action(
+            menu, "Show properties panel", lambda _=False: self._toggle_properties(True))
+        return menu
+
+    def _variant_menu(self):
+        menu = QMenu("Change Variant", self)
+        add = menu.addAction("Add additional variants")
+        add.triggered.connect(self._add_missing_variants)
+        menu.addSeparator()
+        for key, label in IMAGE_QUALITIES:
+            action = menu.addAction(f"Image: {label}")
+            action.triggered.connect(
+                lambda _checked=False, quality=key: self._set_image_quality(quality)
+            )
+        return menu
+
+    def _set_image_quality(self, quality):
+        model, _proxy, _table = self._pack()
+        for reel in self._selected_reels():
+            url = reel.url
+            match = reel.variant if reel.variant == "image" else "image"
+            model.update_reel(url, match_variant=match, image_quality=quality)
+        self._fill_properties()
+
+    def _add_missing_variants(self):
+        urls = {reel.url for reel in self._selected_reels()}
+        if not urls:
+            return
+        extras = []
+        have = set()
+        bases = {}
+        for row in range(self.grab_model.rowCount()):
+            reel = self.grab_model.reel_at(row)
+            have.add((reel.url, reel.variant or ""))
+            if reel.url in urls and (reel.url not in bases or not reel.variant):
+                bases[reel.url] = reel.as_entry()
+        for url in urls:
+            base = dict(bases.get(url) or {"url": url})
+            base.pop("variant", None)
+            for item in extract_package_rows(base):
+                key = (item.get("url"), item.get("variant") or "")
+                if key not in have:
+                    extras.append(item)
+        if extras:
+            self.grab_model.add_entries(extras)
+
+    def _start_selected(self):
+        self.tabs.setCurrentIndex(TAB_DOWNLOAD)
+        self._set_selected_checks(True)
+        self._start_download()
+
+    def _rename_selected(self):
+        reels = self._selected_reels()
+        if not reels:
+            return
+        text, ok = QInputDialog.getText(
+            self, "Rename", "Name", QLineEdit.EchoMode.Normal, reels[0].title or "",
+        )
+        if not ok:
+            return
+        title = text.strip()
+        model, _proxy, _table = self._pack()
+        for reel in reels:
+            model.update_reel(reel.url, title=title)
+        self._fill_properties()
+        if model is self.model:
+            self._schedule_store()
+
+    def _set_comment_selected(self):
+        reels = self._selected_reels()
+        if not reels:
+            return
+        text, ok = QInputDialog.getText(
+            self, "Comment", "Comment", QLineEdit.EchoMode.Normal, reels[0].comment or "",
+        )
+        if not ok:
+            return
+        model, _proxy, _table = self._pack()
+        for reel in reels:
+            model.update_reel(reel.url, comment=text)
+        self._fill_properties()
+        if model is self.model:
+            self._schedule_store()
+
+    def _set_download_directory(self):
+        reels = self._selected_reels()
+        if not reels:
+            return
+        start = reels[0].save_dir or self._output_root()
+        path = QFileDialog.getExistingDirectory(self, "Set download directory", start)
+        if path:
+            self._apply_save_dir(os.path.normpath(path), reels)
+
+    def _apply_save_dir(self, path, reels=None):
+        """Point selected (or given) rows at one folder instead of grouping them."""
+        reels = list(reels or self._selected_reels())
+        if not path or not reels:
+            return
+        model, _proxy, _table = self._pack()
+        for reel in reels:
+            model.update_reel(reel.url, save_dir=path)
+        self._fill_properties()
+        if model is self.model:
+            self._schedule_store()
+
+    def _folder_for_reel(self, reel):
+        folder = output_folder(reel)
+        if folder:
+            return os.path.abspath(folder)
+        return os.path.abspath(os.path.join(self._output_root(), self._channel()))
 
     def _show_context_menu(self, point):
         table = self.sender()
@@ -1932,33 +2355,39 @@ class MainWindow(QMainWindow):
             return
         model, proxy, _table = self._pack()
         row = proxy.mapToSource(index).row()
-        QDesktopServices.openUrl(QUrl(model.reel_at(row).url))
+        reel = model.reel_at(row)
+        if model is self.grab_model and not reel.variant:
+            return
+        QDesktopServices.openUrl(QUrl(reel.url))
 
     def _reveal(self, reel):
-        folder = os.path.abspath(os.path.join(self._output_root(), self._channel()))
+        folder = self._folder_for_reel(reel)
         files = store.list_output_files(folder, reel.rid, reel.filepath)
         if files:
             QDesktopServices.openUrl(QUrl.fromLocalFile(files[0]))
             return
-        self._open_folder()
+        self._open_folder_path(folder)
 
     def _open_directory(self, reel):
-        """Open the directory of a saved file; fall back to the channel download folder."""
-        folder = os.path.abspath(os.path.join(self._output_root(), self._channel()))
+        """Open the row's save folder, or the finished file's parent."""
+        folder = self._folder_for_reel(reel)
         files = store.list_output_files(folder, reel.rid, reel.filepath)
         if files:
             parent = os.path.dirname(os.path.abspath(files[0]))
             if os.path.isdir(parent):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(parent))
                 return
+        self._open_folder_path(folder)
+
+    def _open_folder_path(self, folder):
         os.makedirs(folder, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _files_for_reels(self, reels):
-        folder = os.path.abspath(os.path.join(self._output_root(), self._channel()))
         files, rids = [], []
         seen = set()
         for reel in reels:
+            folder = self._folder_for_reel(reel)
             for path in store.list_output_files(folder, reel.rid, reel.filepath):
                 if path not in seen:
                     seen.add(path)
@@ -2011,13 +2440,14 @@ class MainWindow(QMainWindow):
         elif failed:
             kind, title = "warning", "Downloads finished"
         else:
-            kind, title = "info", "Downloads finished"
+            kind, title = "done", "Downloads finished"
         lines = [f"{done} of {total} item(s) downloaded."]
         if failed:
             lines.append(f"{failed} failed.")
         if cancelled:
             lines.append(f"{cancelled} cancelled.")
         alert(self, kind, title, "\n".join(lines), stay_on_top=True)
+        telegram_notify.notify_download_done(self._settings, title, "\n".join(lines))
 
     # -------------------------------------------------------------- actions
 
@@ -2135,7 +2565,7 @@ class MainWindow(QMainWindow):
             "Found Link(s)": str(self._grab_added),
             "Duplicate(s)": str(self._grab_dupes),
             "Link queue": str(len(self._grab_queue)),
-            "Grabber list": str(self.grab_model.rowCount()),
+            "Grabber list": str(self.grab_model.package_count()),
             "Download queue": str(self.model.rowCount()),
             "Status": status,
         }
@@ -2157,8 +2587,9 @@ class MainWindow(QMainWindow):
 
     def _hide_grab_panel(self):
         """The pin keeps the last run's numbers on screen until it is unpinned."""
-        if not self.grab_panel.is_pinned():
-            self.grab_panel.hide()
+        if self.grab_panel.is_pinned():
+            return
+        self.grab_panel.slide_hide()
 
     def _show_grab_monitor(self):
         """Bring the monitor back: the last run's numbers until a new one starts."""
@@ -2167,23 +2598,11 @@ class MainWindow(QMainWindow):
         self._show_grab_panel("Analyzing…" if self._grabber_job else "Idle")
 
     def _place_grab_panel(self):
-        """Show the monitor as a desktop tool window, parked once near this app."""
+        """Keep the monitor on the screen's bottom-right unless the user dragged it."""
         panel = getattr(self, "grab_panel", None)
-        if panel is None or panel.isHidden():
+        if panel is None or panel.isHidden() or panel.user_placed or panel.is_sliding():
             return
-        panel.adjustSize()
-        panel.raise_()
-        if panel.user_placed:
-            return
-        floor = self.height()
-        for widget in (self.overview, self.action_bar):
-            if widget is not None and not widget.isHidden():
-                floor = min(floor, widget.mapTo(self, QPoint(0, 0)).y())
-        corner = self.mapToGlobal(QPoint(
-            self.width() - FLOAT_MARGIN,
-            max(floor - FLOAT_MARGIN, FLOAT_MARGIN),
-        ))
-        panel.move(corner.x() - panel.width(), corner.y() - panel.height())
+        panel.dock_bottom_right(animate=False)
 
     def _extract_status_text(self):
         if getattr(self, "continue_btn", None) is not None and self.continue_btn.isEnabled():
@@ -2207,7 +2626,7 @@ class MainWindow(QMainWindow):
             )
         else:
             title, detail = self._extract_status_text()
-        listed = self.grab_model.rowCount()
+        listed = self.grab_model.package_count()
         count = f"{listed} listed" if listed else "Looking for links…"
         loader.show_busy(title, detail, count)
         self._place_extract_loader()
@@ -2275,29 +2694,37 @@ class MainWindow(QMainWindow):
     def _start_next_grab(self):
         if self._thread is not None or not self._grabbing_allowed() or not self._grab_queue:
             return
-        self._grab_current = self._grab_queue.pop(0)
+        raw = self._grab_queue.pop(0)
         if not self._grab_queue:
             self._grab_manual = False
-        # A copied link can name a playlist; the background grabber never opens a
-        # modal, so it takes the video and says how to get the list.
-        pair = youtube_watch_with_list(self._grab_current)
-        if pair:
-            self._grab_current = pair[0]
-            self._append_log(
-                "Link Grabber took the single video; paste the playlist on the "
-                "Grabber tab and press Extract to take the whole list."
-            )
+        if youtube_watch_with_list(raw):
+            if getattr(self, "tray", None):
+                self.tray.show_window()
+            else:
+                self.show()
+                self.raise_()
+                self.activateWindow()
+        choice = self._playlist_choice(raw)
+        if choice is None:
+            self._grab_current = ""
+            self._append_log("Link Grabber skipped a YouTube playlist link (cancelled).")
+            QTimer.singleShot(0, self._start_next_grab)
+            return
+        url, feed = choice
+        self._grab_current = url
         self._grabber_job = True
         self._collecting = True
         self._grab_aborted = False
         self._grab_close_timer.stop()
         self._show_grab_panel("Analyzing…", begin=True)
-        self._append_log(f"Link Grabber collecting: {self._grab_current}")
+        kind = "playlist" if feed else ("video" if feed is False else "link")
+        self._append_log(f"Link Grabber collecting {kind}: {url}")
         self._run(
             JobWorker(
                 "collect",
-                derive_channel(self._grab_current),
-                url=self._grab_current,
+                derive_channel(url),
+                url=url,
+                feed=feed,
                 **self._speed(),
             ),
             merge=True,
@@ -2314,44 +2741,47 @@ class MainWindow(QMainWindow):
             self._sync_close_tooltip()
             if getattr(self, "tray", None):
                 self.tray.reload_controls()
+            self._sync_notify_timer()
 
     # --------------------------------------------------------------- theme
 
     def _icon_color(self):
-        return "#e7ecf3" if self._dark else "#1c1e21"
+        return theme.icon_fg(self._dark)
+
+    def _button_icon_color(self, button):
+        if button.property("pill"):
+            return theme.icon_fg(self._dark)
+        return self._icon_color()
 
     def _toggle_theme(self):
         self._dark = not self._dark
         self._apply_theme()
 
     def _apply_theme(self):
+        self._primary = theme.set_primary(self._primary)
         app = QApplication.instance()
         if app:
             # Set the color scheme first: it decides the native title bar and
             # resets the style's standard palette used as the base below.
             app.styleHints().setColorScheme(theme.color_scheme(self._dark))
-            app.setPalette(theme.palette(self._dark, app.style().standardPalette()))
-            app.setStyleSheet(theme.stylesheet(self._dark))
+            app.setPalette(theme.palette(self._dark, app.style().standardPalette(), self._primary))
+            app.setStyleSheet(theme.stylesheet(self._dark, self._primary))
         self.model.set_dark(self._dark)
         self.grab_model.set_dark(self._dark)
-        self.setWindowIcon(icons.icon("app", "#1877f2", 64))
+        self.setWindowIcon(icons.icon("app", self._primary, 64))
+        if getattr(self, "logo", None):
+            self.logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(18, 18))
         if getattr(self, "tray", None):
             self.tray.refresh_icon()
 
-        # Toolbar icons follow the window text color; icons on an accented pill
-        # sit on a colored button, which stays dark in both themes.
         for button in self.findChildren(QToolButton):
             name = button.property("iconName")
             if name:
-                accent = button.property("accent")
-                button.setIcon(
-                    icons.icon(name, "#eef2f7", 15) if accent
-                    else icons.icon(name, self._icon_color())
-                )
+                button.setIcon(icons.icon(name, self._button_icon_color(button)))
         for button in self.findChildren(QPushButton):
             name = button.property("iconName")
             if name:
-                button.setIcon(icons.icon(name, "#eef2f7", 15))
+                button.setIcon(icons.icon(name, self._button_icon_color(button)))
         for label in self.findChildren(QLabel):
             name = label.property("iconName")
             if name:
@@ -2413,15 +2843,44 @@ class MainWindow(QMainWindow):
                 "Extract a URL into the Grabber table first.",
             )
             return
+        default_dir = ""
+        if getattr(self, "save_path_edit", None) is not None:
+            default_dir = self.save_path_edit.text().strip()
+        selected_keys = {(reel.url, reel.variant or "") for reel in reels}
+        want_all = {url for url, variant in selected_keys if not variant}
+        kinds_by_url = {}
+        quality_by_url = {}
+        templates = {}
+        view_kinds = self.views.checked_kinds() if hasattr(self, "views") else set()
+        for row in range(self.grab_model.rowCount()):
+            reel = self.grab_model.reel_at(row)
+            if reel.url not in {item[0] for item in selected_keys}:
+                continue
+            if not reel.variant:
+                templates[reel.url] = reel
+                continue
+            selected_child = (reel.url, reel.variant) in selected_keys
+            if selected_child or (
+                reel.url in want_all and (not view_kinds or reel.variant in view_kinds)
+            ):
+                kinds_by_url.setdefault(reel.url, set()).add(reel.variant)
+                if reel.variant == "image":
+                    quality_by_url[reel.url] = reel.image_quality or "best"
+                templates.setdefault(reel.url, reel)
         entries = []
-        for reel in reels:
+        for url, reel in templates.items():
             entry = reel.as_entry()
             entry["status"] = "queued"
             entry["percent"] = 0
             entry["filepath"] = ""
+            entry["variant"] = ""
+            entry["media_kinds"] = kinds_by_url.get(url) or set()
+            entry["image_quality"] = quality_by_url.get(url, "")
+            if not entry.get("save_dir"):
+                entry["save_dir"] = default_dir
             entries.append(entry)
         added = self.model.add_entries(entries)
-        self.grab_model.remove_urls([reel.url for reel in reels])
+        self.grab_model.remove_urls(list(templates))
         skipped = len(entries) - added
         self._sync_header_check()
         self._update_counter()
@@ -2449,6 +2908,7 @@ class MainWindow(QMainWindow):
         video_btn = box.addButton("This video", QMessageBox.ButtonRole.AcceptRole)
         list_btn = box.addButton("Whole playlist", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         box.setDefaultButton(video_btn)
         box.exec()
         clicked = box.clickedButton()
@@ -2481,20 +2941,27 @@ class MainWindow(QMainWindow):
         elif self.model.counts().get("done"):
             self._append_log(f"Continuing {len(urls)} remaining item(s).")
         wanted = set(urls)
-        group_by_source = self._settings.value("group_downloads", True, bool)
+        group_by_source = self._settings.value("group_downloads", False, bool)
         folders = {}
-        if group_by_source:
-            folders = {
-                reel.url: source_folder_name(reel.title, reel.description, reel.rid)
-                for reel in (self.model.reel_at(row) for row in range(self.model.rowCount()))
-                if reel.url in wanted
-            }
+        url_media_kinds = {}
+        for row in range(self.model.rowCount()):
+            reel = self.model.reel_at(row)
+            if reel.url not in wanted:
+                continue
+            dest = (reel.save_dir or "").strip()
+            if group_by_source:
+                name = source_folder_name(reel.title, reel.description, reel.rid)
+                dest = os.path.join(dest, name) if dest else name
+            folders[reel.url] = dest
+            if reel.media_kinds:
+                url_media_kinds[reel.url] = set(reel.media_kinds)
         self._run(JobWorker(
             "download",
             channel,
             urls=urls,
             source_folders=folders,
-            group_by_source=group_by_source,
+            group_by_source=False,
+            url_media_kinds=url_media_kinds,
             **self._speed(),
         ))
 
@@ -2524,6 +2991,7 @@ class MainWindow(QMainWindow):
                 if get("speed_limit_on", False, bool) else ""
             ),
             "media_kinds": kinds,
+            "kind_folders": self._kind_folders(),
         }
 
     def _run(self, worker, merge=False):
@@ -2534,7 +3002,7 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.log_line.connect(self._append_log)
         worker.waiting_login.connect(self._on_waiting_login)
-        worker.urls_ready.connect(self.add_grab_urls if merge else self.set_urls)
+        worker.urls_ready.connect(self._enqueue_grab_urls if merge else self.set_urls)
         worker.progress.connect(self._on_progress)
         worker.finished.connect(self._on_finished)
         worker.finished.connect(lambda _: thread.quit())
@@ -2637,6 +3105,7 @@ class MainWindow(QMainWindow):
         keep_loader = (
             self._grabber_job and self._grab_queue and not self._grab_aborted
         )
+        self._drain_grab_sync()
         self._collecting = False
         if not keep_loader:
             self._hide_extract_loader()
@@ -2683,6 +3152,7 @@ class MainWindow(QMainWindow):
             self._grab_close_timer.start()
             self._grab_added = 0
             self._grab_dupes = 0
+        self._drain_grab_sync()
         self._apply_pending_auto_confirm()
 
     # ------------------------------------------------------------- settings
@@ -2713,6 +3183,7 @@ class MainWindow(QMainWindow):
         self._fill_recent_combo(source)
         self._restore_tool_settings()
         self._dark = get("dark", self._dark, bool)
+        self._primary = theme.normalize_hex(get("theme_primary", self._primary, str))
         self.log.setVisible(get("log_visible", False, bool))
         self.overview.setVisible(get("overview_visible", True, bool))
         self.action_bar.setVisible(get("action_bar_visible", True, bool))
@@ -2733,6 +3204,11 @@ class MainWindow(QMainWindow):
             else:
                 keys = [part.strip() for part in str(raw).split(",") if part.strip()]
             self.views.set_checked_kinds(keys, emit=False)
+            folders = {}
+            for key, _label in MEDIA_KINDS:
+                folders[key] = get(f"views_folder_{key}", "", str)
+            self.views.set_kind_folders(folders)
+            self._apply_kind_folders_to_models()
             self._apply_views_filter()
         geometry = get("geometry")
         if geometry:
@@ -2745,7 +3221,7 @@ class MainWindow(QMainWindow):
             self.splitter.restoreState(main)
             self._clamp_overview_size()
         self._sync_save_path_edit()
-        state = get("header_v6")
+        state = get("header_v8")
         if state:
             self.table.horizontalHeader().restoreState(state)
             self._apply_column_modes()
@@ -2753,6 +3229,9 @@ class MainWindow(QMainWindow):
     def _restore_tool_settings(self):
         get = self._settings.value
         self._dark = get("dark", self._dark, bool)
+        self._primary = theme.normalize_hex(
+            get("theme_primary", getattr(self, "_primary", theme.DEFAULT_PRIMARY), str)
+        )
         self.log.setVisible(get("log_visible", self.log.isVisible(), bool))
         self.act_grabber.setChecked(
             get("link_grabber", self.act_grabber.isChecked(), bool)
@@ -2760,6 +3239,50 @@ class MainWindow(QMainWindow):
         self.grab_add_at_top = get("grab_add_at_top", self.grab_add_at_top, bool)
         self.grab_auto_confirm = get("grab_auto_confirm", self.grab_auto_confirm, bool)
         self.grab_autostart = get("grab_autostart", self.grab_autostart, bool)
+        self._sync_notify_timer()
+
+    def _sync_notify_timer(self):
+        timer = getattr(self, "_notify_timer", None)
+        if timer is None:
+            return
+        if telegram_notify.enabled(self._settings) and telegram_notify.bot_token(self._settings):
+            if not timer.isActive():
+                timer.start()
+        else:
+            timer.stop()
+
+    def _poll_telegram_notify(self):
+        if getattr(self, "_notify_busy", False):
+            return
+        if not telegram_notify.enabled(self._settings):
+            return
+        token = telegram_notify.bot_token(self._settings)
+        if not token:
+            return
+        self._notify_busy = True
+        offset = telegram_notify.update_offset(self._settings)
+        accounts = telegram_notify.load_accounts(self._settings)
+
+        def work():
+            try:
+                result = telegram_notify.poll_starts(token, offset, accounts, reply=True)
+            except (RuntimeError, OSError) as exc:
+                result = exc
+            self.notify_poll_done.emit(result)
+
+        threading.Thread(target=work, daemon=True, name="telegram-notify-poll").start()
+
+    def _on_notify_poll_done(self, result):
+        self._notify_busy = False
+        if isinstance(result, Exception):
+            return
+        accounts, offset, pending = result
+        telegram_notify.save_state(self._settings, accounts, offset=offset)
+        if pending:
+            self._append_log(
+                f"Telegram: {len(pending)} account(s) waiting for approval "
+                "in Settings → Notifications."
+            )
 
     def _save_settings(self):
         put = self._settings.setValue
@@ -2768,6 +3291,7 @@ class MainWindow(QMainWindow):
         if source:
             put("recent_urls", remember_recent(self._recent_urls(), source))
         put("dark", self._dark)
+        put("theme_primary", self._primary)
         put("log_visible", self.log.isVisible())
         put("status_visible", not self.statusBar().isHidden())
         put("overview_visible", not self.overview.isHidden())
@@ -2781,12 +3305,14 @@ class MainWindow(QMainWindow):
         put("link_grabber", self.act_grabber.isChecked())
         if hasattr(self, "views"):
             put("views_kinds", ",".join(sorted(self.views.checked_kinds())))
+            for key, path in self.views.kind_folders().items():
+                put(f"views_folder_{key}", path)
         put("geometry", self.saveGeometry())
         if hasattr(self, "work_split"):
             put("work_split", self.work_split.saveState())
         if hasattr(self, "splitter"):
             put("main_split", self.splitter.saveState())
-        put("header_v6", self.table.horizontalHeader().saveState())
+        put("header_v8", self.table.horizontalHeader().saveState())
         put("columns_locked", self._columns_locked)
         if getattr(self, "grab_panel", None):
             put("grab_monitor", self.grab_panel.saveGeometry())

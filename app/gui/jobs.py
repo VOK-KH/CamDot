@@ -9,6 +9,8 @@ from app.core.download import DEFAULT_FRAGMENTS, DEFAULT_WORKERS, download_urls
 from app.core.jobs import StopRequested
 from app.core.runtime import default_output_root
 
+GRAB_EMIT_CHUNK = 32
+
 
 class JobWorker(QObject):
     """Runs scraping and downloading off the UI thread."""
@@ -25,6 +27,7 @@ class JobWorker(QObject):
         ffmpeg_location="", cookies_browser="", feed=None, filename_template="",
         cookies_file="", dateafter="", limit_rate="",
         media_kinds=None, source_folders=None, group_by_source=True,
+        url_media_kinds=None, kind_folders=None,
     ):
         super().__init__()
         self.mode = mode
@@ -45,6 +48,8 @@ class JobWorker(QObject):
         self.media_kinds = media_kinds
         self.source_folders = source_folders or {}
         self.group_by_source = group_by_source
+        self.url_media_kinds = url_media_kinds or {}
+        self.kind_folders = kind_folders or {}
         self._stop = False
         self._login = threading.Event()
         self._last_emit = {}
@@ -88,10 +93,21 @@ class JobWorker(QObject):
             # so the whole list can be reviewed first.
             if self.mode == "collect":
                 streamed = []
+                pending = []
+
+                def flush_pending():
+                    if not pending:
+                        return
+                    self.urls_ready.emit(list(pending))
+                    pending.clear()
 
                 def on_entries(batch):
                     streamed.extend(batch)
-                    self.urls_ready.emit(batch)
+                    pending.extend(batch)
+                    while len(pending) >= GRAB_EMIT_CHUNK:
+                        chunk = pending[:GRAB_EMIT_CHUNK]
+                        del pending[:GRAB_EMIT_CHUNK]
+                        self.urls_ready.emit(chunk)
 
                 _, entries = collect_entries(
                     self.channel,
@@ -107,6 +123,7 @@ class JobWorker(QObject):
                     cookies_file=self.cookies_file,
                     dateafter=self.dateafter,
                 )
+                flush_pending()
                 if not streamed:
                     self.urls_ready.emit(entries)
                 self.finished.emit("")
@@ -129,6 +146,8 @@ class JobWorker(QObject):
                 media_kinds=self.media_kinds,
                 source_folders=self.source_folders,
                 group_by_source=self.group_by_source,
+                url_media_kinds=self.url_media_kinds,
+                kind_folders=self.kind_folders,
             )
             self.finished.emit("" if not failures else f"{failures} item(s) failed.")
         except StopRequested:

@@ -24,6 +24,7 @@ from app.core.download import (
     read_urls,
     relocate_artifacts,
     resolve_filename_template,
+    resolve_item_dir,
     reel_id,
     source_folder_name,
     twitter_status_id,
@@ -378,6 +379,8 @@ class MediaKindArgs(unittest.TestCase):
         self.assertEqual(args[args.index("--audio-format") + 1], "m4a")
         self.assertIn("--write-thumbnail", args)
         self.assertEqual(args[args.index("--convert-thumbnails") + 1], "jpg")
+        self.assertIn("--write-description", args)
+        self.assertIn("--write-info-json", args)
         self.assertNotIn("--skip-download", args)
 
     def test_music_without_video_omits_keep_video(self):
@@ -410,16 +413,57 @@ class MediaKindArgs(unittest.TestCase):
 
 
 class OrganizeMedia(unittest.TestCase):
-    def test_moves_finished_files_into_kind_folders(self):
+    def test_moves_finished_files_out_of_kind_folders(self):
         with tempfile.TemporaryDirectory() as folder:
-            for name in ("clip.mp4", "song.m4a", "cover.jpg", "clip.mp4.part"):
-                with open(os.path.join(folder, name), "wb") as f:
-                    f.write(b"x")
+            layout = {
+                "video/clip.mp4": b"x",
+                "audio/song.m4a": b"x",
+                "image/cover.jpg": b"x",
+                "clip.mp4.part": b"x",
+            }
+            for rel, data in layout.items():
+                path = os.path.join(folder, rel)
+                os.makedirs(os.path.dirname(path) or folder, exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(data)
             organize_media_into_kinds(folder, {"video", "music", "image"})
-            self.assertTrue(os.path.isfile(os.path.join(folder, "video", "clip.mp4")))
-            self.assertTrue(os.path.isfile(os.path.join(folder, "audio", "song.m4a")))
-            self.assertTrue(os.path.isfile(os.path.join(folder, "image", "cover.jpg")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "clip.mp4")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "song.m4a")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "cover.jpg")))
             self.assertTrue(os.path.isfile(os.path.join(folder, "clip.mp4.part")))
+            self.assertFalse(os.path.isdir(os.path.join(folder, "video")))
+            self.assertFalse(os.path.isdir(os.path.join(folder, "audio")))
+            self.assertFalse(os.path.isdir(os.path.join(folder, "image")))
+
+    def test_moves_finished_files_into_views_kind_folders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            video_dir = os.path.join(folder, "Videos")
+            music_dir = os.path.join(folder, "Music")
+            image_dir = os.path.join(folder, "Pictures")
+            docs_dir = os.path.join(folder, "Docs")
+            layout = {
+                "clip.mp4": b"x",
+                "song.m4a": b"x",
+                "cover.jpg": b"x",
+                "clip.description": b"x",
+            }
+            for name, data in layout.items():
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(data)
+            organize_media_into_kinds(
+                folder,
+                {"video", "music", "image", "document"},
+                {
+                    "video": video_dir,
+                    "music": music_dir,
+                    "image": image_dir,
+                    "document": docs_dir,
+                },
+            )
+            self.assertTrue(os.path.isfile(os.path.join(video_dir, "clip.mp4")))
+            self.assertTrue(os.path.isfile(os.path.join(music_dir, "song.m4a")))
+            self.assertTrue(os.path.isfile(os.path.join(image_dir, "cover.jpg")))
+            self.assertTrue(os.path.isfile(os.path.join(docs_dir, "clip.description")))
 
 
 class RelocateArtifacts(unittest.TestCase):
@@ -465,15 +509,16 @@ class DownloadKwargs(unittest.TestCase):
                         source_folders={url: "My Caption"},
                     )
         self.assertEqual(failures, 0)
-        self.assertEqual(captured["args"][-2], frozenset({"image"}))
-        self.assertEqual(captured["args"][-1], "My Caption")
+        self.assertEqual(captured["args"][-3], frozenset({"image"}))
+        self.assertEqual(captured["args"][-2], "My Caption")
+        self.assertIsNone(captured["args"][-1])
 
 
     def test_download_urls_skips_source_folder_when_grouping_disabled(self):
         captured = {}
 
         def fake_one(*args, **kwargs):
-            captured["source_folder"] = args[-1]
+            captured["source_folder"] = args[-2]
             return 0
 
         url = "https://www.facebook.com/reel/99"
@@ -489,6 +534,19 @@ class DownloadKwargs(unittest.TestCase):
                     )
         self.assertEqual(failures, 0)
         self.assertEqual(captured["source_folder"], "")
+
+
+class ItemDir(unittest.TestCase):
+    def test_resolve_item_dir_keeps_an_absolute_save_folder(self):
+        self.assertEqual(resolve_item_dir(r"C:\out\chan", ""), r"C:\out\chan")
+        self.assertEqual(
+            resolve_item_dir(r"C:\out\chan", r"D:\pins"),
+            r"D:\pins",
+        )
+        self.assertEqual(
+            resolve_item_dir(r"C:\out\chan", "caption"),
+            os.path.join(r"C:\out\chan", "caption"),
+        )
 
 
 class DownloadLayout(unittest.TestCase):

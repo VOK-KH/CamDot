@@ -4,6 +4,11 @@ from PySide6.QtGui import QColor, QPalette
 
 # The app ships dark; the toggle and Settings only override it.
 DEFAULT_DARK = True
+DEFAULT_PRIMARY = "#1877f2"
+ICON_ON_DARK = "#eef2f7"
+ICON_ON_LIGHT = "#1c1e21"
+THEME_STYLES = (("Dark", True), ("Light", False))
+_active_primary = DEFAULT_PRIMARY
 
 # Widgets the style paints itself (progress bars, scrollbars, menus) read the
 # palette rather than the stylesheet, so the dark theme needs both.
@@ -22,6 +27,33 @@ _DARK_PALETTE = {
 }
 
 
+def normalize_hex(value, fallback=DEFAULT_PRIMARY):
+    """Return `#rrggbb`, or `fallback` when the text is not a color."""
+    text = str(value or "").strip()
+    if text and not text.startswith("#"):
+        text = f"#{text}"
+    color = QColor(text)
+    if not color.isValid():
+        color = QColor(fallback)
+    return color.name(QColor.NameFormat.HexRgb)
+
+
+def set_primary(value=None):
+    """Remember the accent used by stylesheets, icons, and status paints."""
+    global _active_primary
+    _active_primary = normalize_hex(value or _active_primary)
+    return _active_primary
+
+
+def primary_color():
+    return _active_primary
+
+
+def icon_fg(dark):
+    """Stroke color for icons sitting on the window chrome."""
+    return ICON_ON_DARK if dark else ICON_ON_LIGHT
+
+
 def color_scheme(dark):
     """Qt color scheme for the theme.
 
@@ -31,9 +63,10 @@ def color_scheme(dark):
     return Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light
 
 
-def palette(dark, base=None):
+def palette(dark, base=None, primary=None):
     """Return the palette for the theme; `base` is the style's default palette."""
     result = QPalette(base) if base is not None else QPalette()
+    accent = QColor(set_primary(primary) if primary is not None else primary_color())
     if dark:
         for role, color in _DARK_PALETTE.items():
             result.setColor(role, QColor(color))
@@ -43,6 +76,8 @@ def palette(dark, base=None):
         result.setColor(
             QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#6b7785")
         )
+    result.setColor(QPalette.ColorRole.Highlight, accent)
+    result.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
     return result
 
 LIGHT = """
@@ -421,60 +456,60 @@ QMenu::item:selected { background: #1f3a5f; }
 QMenu::separator { height: 1px; background: #26303d; margin: 4px 8px; }
 """
 
-# Pill buttons look the same on the action bar and next to the Grabber URL.
-ACTION_BAR = """
-QWidget#actionBar QPushButton, QWidget#headerBar QPushButton {
+# Labelled action-bar buttons share the default gray pill; icon-only tools stay compact.
+ACTION_BAR_DARK = """
+QWidget#actionBar QPushButton, QWidget#headerBar QPushButton,
+QWidget#actionBar QToolButton[pill="true"] {
     background: #2a2f3a;
     color: #eef2f7;
-    border: none;
-    border-radius: 4px;
-    padding: 4px 10px;
+    border: 1px solid #3a4250;
+    border-radius: 3px;
+    padding: 1px 6px;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 500;
 }
-QWidget#actionBar QPushButton:hover, QWidget#headerBar QPushButton:hover { background: #363d4b; }
-QWidget#actionBar QPushButton:disabled, QWidget#headerBar QPushButton:disabled { color: #6b7280; background: #20242c; }
-QWidget#actionBar QPushButton[accent="red"], QWidget#headerBar QPushButton[accent="red"] { background: #c0392b; }
-QWidget#actionBar QPushButton[accent="red"]:hover, QWidget#headerBar QPushButton[accent="red"]:hover { background: #a93226; }
-QWidget#actionBar QPushButton[accent="blue"], QWidget#headerBar QPushButton[accent="blue"] { background: #1877f2; }
-QWidget#actionBar QPushButton[accent="blue"]:hover, QWidget#headerBar QPushButton[accent="blue"]:hover { background: #166fe0; }
-QWidget#actionBar QPushButton[accent="green"], QWidget#headerBar QPushButton[accent="green"] { background: #2f9e4f; }
-QWidget#actionBar QPushButton[accent="green"]:hover, QWidget#headerBar QPushButton[accent="green"]:hover { background: #278742; }
-QWidget#actionBar QPushButton[accent="orange"], QWidget#headerBar QPushButton[accent="orange"] { background: #e08733; }
-QWidget#actionBar QPushButton[accent="orange"]:hover, QWidget#headerBar QPushButton[accent="orange"]:hover { background: #c9762a; }
-QWidget#actionBar QPushButton:disabled[accent], QWidget#headerBar QPushButton:disabled[accent] { background: #20242c; }
+QWidget#actionBar QPushButton:hover, QWidget#headerBar QPushButton:hover,
+QWidget#actionBar QToolButton[pill="true"]:hover { background: #363d4b; }
+QWidget#actionBar QPushButton:disabled, QWidget#headerBar QPushButton:disabled,
+QWidget#actionBar QToolButton[pill="true"]:disabled { color: #6b7280; background: #20242c; }
+QWidget#actionBar QToolButton[pill="true"]::menu-button {
+    width: 12px;
+    border: none;
+    border-left: 1px solid #3a4250;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+}
+QWidget#actionBar QToolButton[pill="true"]::menu-button:hover { background: #404859; }
+"""
 
-/* The bottom bar's labelled buttons are tool buttons, so the ones carrying a
-   menu can split into a label and an arrow. */
-QWidget#actionBar QToolButton[accent] {
-    background: #2a2f3a;
-    color: #eef2f7;
-    border: none;
-    border-radius: 4px;
-    padding: 4px 10px;
+ACTION_BAR_LIGHT = """
+QWidget#actionBar QPushButton, QWidget#headerBar QPushButton,
+QWidget#actionBar QToolButton[pill="true"] {
+    background: #ffffff;
+    color: #1c1e21;
+    border: 1px solid #c4c8ce;
+    border-radius: 3px;
+    padding: 1px 6px;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 500;
 }
-QWidget#actionBar QToolButton[accent]:hover { background: #363d4b; }
-QWidget#actionBar QToolButton[accent]:disabled { color: #6b7280; background: #20242c; }
-QWidget#actionBar QToolButton[accent="red"] { background: #c0392b; }
-QWidget#actionBar QToolButton[accent="red"]:hover { background: #a93226; }
-QWidget#actionBar QToolButton[accent="blue"] { background: #1877f2; }
-QWidget#actionBar QToolButton[accent="blue"]:hover { background: #166fe0; }
-QWidget#actionBar QToolButton[accent="green"] { background: #2f9e4f; }
-QWidget#actionBar QToolButton[accent="green"]:hover { background: #278742; }
-QWidget#actionBar QToolButton[accent="orange"] { background: #e08733; }
-QWidget#actionBar QToolButton[accent="orange"]:hover { background: #c9762a; }
-QWidget#actionBar QToolButton[accent]::menu-button {
-    width: 15px;
+QWidget#actionBar QPushButton:hover, QWidget#headerBar QPushButton:hover,
+QWidget#actionBar QToolButton[pill="true"]:hover { background: #e9ebee; }
+QWidget#actionBar QPushButton:disabled, QWidget#headerBar QPushButton:disabled,
+QWidget#actionBar QToolButton[pill="true"]:disabled { color: #9aa0a6; background: #f2f3f5; }
+QWidget#actionBar QToolButton[pill="true"]::menu-button {
+    width: 12px;
     border: none;
-    border-left: 1px solid rgba(255, 255, 255, 0.25);
-    border-top-right-radius: 4px;
-    border-bottom-right-radius: 4px;
+    border-left: 1px solid #c4c8ce;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
 }
-QWidget#actionBar QToolButton[accent]::menu-button:hover { background: rgba(255, 255, 255, 0.12); }
+QWidget#actionBar QToolButton[pill="true"]::menu-button:hover { background: #dfe4ea; }
 """
 
 
-def stylesheet(dark):
-    return (DARK if dark else LIGHT) + ACTION_BAR
+def stylesheet(dark, primary=None):
+    """Window chrome plus action-bar pills; `#1877f2` is swapped for `primary`."""
+    accent = set_primary(primary)
+    css = (DARK if dark else LIGHT) + (ACTION_BAR_DARK if dark else ACTION_BAR_LIGHT)
+    return css.replace("#1877f2", accent)

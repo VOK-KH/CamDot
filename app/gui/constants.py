@@ -8,6 +8,7 @@ from app.core.model import (
     COL_ETA,
     COL_FILE,
     COL_HOST,
+    COL_ICON,
     COL_ID,
     COL_INDEX,
     COL_PROGRESS,
@@ -20,16 +21,19 @@ from app.core.model import (
 )
 
 COLUMN_WIDTHS = {
-    COL_CHECK: 28, COL_HOST: 118, COL_INDEX: 42, COL_STATUS: 110, COL_PROGRESS: 118,
-    COL_TITLE: 280, COL_UPLOADER: 140, COL_ID: 120, COL_SIZE: 78, COL_DURATION: 64,
-    COL_SPEED: 84, COL_ETA: 52, COL_FILE: 220, COL_URL: 200, COL_ADDED: 130,
+    COL_CHECK: 28, COL_ICON: 28, COL_HOST: 118, COL_INDEX: 42, COL_STATUS: 110,
+    COL_PROGRESS: 118, COL_TITLE: 280, COL_UPLOADER: 140, COL_ID: 120, COL_SIZE: 78,
+    COL_DURATION: 64, COL_SPEED: 84, COL_ETA: 52, COL_FILE: 220, COL_URL: 200,
+    COL_ADDED: 130,
 }
-FIXED_COLUMNS = (COL_CHECK, COL_INDEX)
-# The row number and the checkbox are structural, so the menu never hides them.
-PINNED_COLUMNS = (COL_INDEX, COL_CHECK)
-HIDDEN_BY_DEFAULT = (COL_UPLOADER, COL_FILE, COL_URL)
+FIXED_COLUMNS = (COL_CHECK, COL_INDEX, COL_ICON)
+PINNED_COLUMNS = (COL_INDEX, COL_CHECK, COL_ICON)
+HIDDEN_BY_DEFAULT = (COL_UPLOADER, COL_URL)
 # Grabber is a review list, so the download meters stay off it.
-GRABBER_HIDDEN = (COL_UPLOADER, COL_FILE, COL_URL, COL_PROGRESS, COL_SPEED, COL_ETA)
+GRABBER_HIDDEN = (COL_UPLOADER, COL_URL, COL_PROGRESS, COL_SPEED, COL_ETA)
+# Grabber collect queue: how many packages to paint per timer tick.
+GRAB_SYNC_CHUNK = 32
+GRAB_SYNC_MS = 16
 RECENT_URL_LIMIT = 20
 # The window is frameless, so it grows its own grab strip along the edges.
 FRAME_MARGIN = 5

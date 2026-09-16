@@ -1,4 +1,6 @@
 """Compact file and link properties strip."""
+import os
+
 from PySide6.QtCore import QSize, Signal
 from PySide6.QtWidgets import (
     QFormLayout,
@@ -87,7 +89,7 @@ class PropertiesPanel(QWidget):
         else:
             self.setEnabled(True)
             self.name.setText(reel.title or "")
-            self.save_to.setText(reel.filepath or "")
+            self.save_to.setText(reel.save_dir or os.path.dirname(reel.filepath or "") or "")
             self.download_from.setText(reel.url or "")
             self.comment.setText(reel.comment or "")
         self._loading = False
@@ -95,6 +97,6 @@ class PropertiesPanel(QWidget):
     def fields(self):
         return {
             "title": self.name.text(),
-            "filepath": self.save_to.text(),
+            "save_dir": self.save_to.text().strip(),
             "comment": self.comment.text(),
         }

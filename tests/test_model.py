@@ -27,9 +27,12 @@ from app.core.model import (
     Reel,
     ReelFilterProxy,
     ReelModel,
+    extract_package_rows,
     format_bytes,
     format_eta,
     media_kind,
+    output_folder,
+    variant_label,
 )
 
 URLS = [
@@ -303,7 +306,49 @@ class Model(unittest.TestCase):
         self.assertEqual(self.model.reel_at(0).comment, "note")
         self.assertEqual(self.model.reel_at(0).filepath, r"H:\out\clip.mp4")
         self.assertEqual(self._display(0, COL_TITLE), "Edited")
+        self.assertEqual(self._display(0, COL_FILE), r"H:\out\clip.mp4")
         self.assertTrue(changed)
+        self.assertTrue(self.model.update_reel(URLS[0], save_dir=r"H:\Media\Pins"))
+        self.assertEqual(self.model.reel_at(0).save_dir, r"H:\Media\Pins")
+        self.assertEqual(self.model.reel_at(0).as_entry()["save_dir"], r"H:\Media\Pins")
+
+    def test_extract_package_rows_add_video_audio_and_image(self):
+        rows = extract_package_rows({"url": URLS[0], "title": "4K HDR"})
+        self.assertEqual(
+            [row.get("variant") for row in rows],
+            ["", "video", "music", "image", "document"],
+        )
+        child = Reel(URLS[0], variant="image", image_quality="high", title="4K HDR")
+        self.assertEqual(variant_label(child), "Image: High Quality Image")
+        self.assertEqual(variant_label(Reel(URLS[0], variant="document")), "Document")
+        video_dir = r"D:\Videos"
+        rows = extract_package_rows(
+            {"url": URLS[0], "save_dir": r"H:\Downloads"},
+            kind_folders={"video": video_dir},
+        )
+        self.assertEqual(rows[0]["save_dir"], r"H:\Downloads")
+        self.assertEqual(rows[1]["save_dir"], video_dir)
+
+    def test_tree_rows_share_the_save_folder_and_show_files(self):
+        folder = r"H:\Downloads"
+        self.model.set_urls([])
+        self.model.add_entries(extract_package_rows({
+            "url": URLS[0], "title": "Clip", "save_dir": folder,
+        }))
+        self.assertEqual(self._display(0, COL_FILE), folder)
+        self.assertEqual(self._display(1, COL_FILE), folder)
+        video = os.path.join(folder, "clip.mp4")
+        audio = os.path.join(folder, "clip.m4a")
+        image = os.path.join(folder, "clip.jpg")
+        self.model.attach_output_files(URLS[0], folder, [video, audio, image], expand=True)
+        self.assertEqual(self.model.reel_at(0).filepath, "")
+        self.assertEqual(self._display(0, COL_FILE), folder)
+        self.assertEqual(self._display(1, COL_TITLE).strip(), "clip.mp4")
+        self.assertEqual(self._display(1, COL_FILE), video)
+        self.assertEqual(self._display(2, COL_FILE), audio)
+        self.assertEqual(self._display(3, COL_FILE), image)
+        self.assertTrue(self.model.reel_at(0).expanded)
+        self.assertEqual(output_folder(Reel(URLS[0], filepath=os.path.join(folder, "video", "x.mp4"))), folder)
 
 
 class Filtering(unittest.TestCase):

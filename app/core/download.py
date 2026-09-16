@@ -45,11 +45,12 @@ _TWITTER_MEDIA_APIS = (
 )
 _HTTP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
-ALL_MEDIA_KINDS = frozenset({"video", "music", "image"})
+ALL_MEDIA_KINDS = frozenset({"video", "music", "image", "document"})
 _WIN_ILLEGAL = re.compile(r'[\\/:*?"<>|]+')
 _VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov"}
 _AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".flac"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_DOCUMENT_EXTS = {".txt", ".json", ".srt", ".vtt", ".nfo", ".xml", ".description"}
 _STAGING_EXTS = {".part", ".ytdl"}
 
 # Caption first, then the Facebook title, then the reel id. The id stays in
@@ -119,7 +120,7 @@ def post_label(title="", description="", rid=""):
 
 
 def normalize_media_kinds(media_kinds=None):
-    """Views keys (video/music/image); empty or None means all three."""
+    """Views keys (video/music/image/document); empty or None means all of them."""
     if not media_kinds:
         return ALL_MEDIA_KINDS
     return frozenset(media_kinds)
@@ -138,6 +139,15 @@ def source_folder_name(title="", description="", rid=""):
     return f"{token}-{suffix}" if suffix else token
 
 
+def resolve_item_dir(output_dir, source_folder=""):
+    """Join a relative caption folder, or keep an absolute Set-download-directory path."""
+    if not source_folder:
+        return output_dir
+    if os.path.isabs(source_folder):
+        return source_folder
+    return os.path.join(output_dir, source_folder)
+
+
 def _kind_for_ext(ext):
     if ext in _VIDEO_EXTS:
         return "video"
@@ -145,16 +155,47 @@ def _kind_for_ext(ext):
         return "music"
     if ext in _IMAGE_EXTS:
         return "image"
+    if ext in _DOCUMENT_EXTS:
+        return "document"
     return ""
 
 
 _KIND_DIRS = {"video": "video", "music": "audio", "image": "image"}
 
 
-def organize_media_into_kinds(source_dir, media_kinds=None):
-    """Move finished files into video/, audio/, and image/ under the source folder."""
-    kinds = normalize_media_kinds(media_kinds)
+def organize_media_into_kinds(source_dir, media_kinds=None, kind_folders=None):
+    """Flatten leftover type folders, then move files into Views save folders."""
     if not source_dir or not os.path.isdir(source_dir):
+        return
+    for name in _KIND_DIRS.values():
+        folder = os.path.join(source_dir, name)
+        if not os.path.isdir(folder):
+            continue
+        try:
+            entries = list(os.listdir(folder))
+        except OSError:
+            continue
+        for filename in entries:
+            src = os.path.join(folder, filename)
+            if not os.path.isfile(src):
+                continue
+            dest = os.path.join(source_dir, filename)
+            if os.path.exists(dest):
+                continue
+            try:
+                os.replace(src, dest)
+            except OSError:
+                continue
+        try:
+            os.rmdir(folder)
+        except OSError:
+            pass
+    targets = {
+        key: os.path.normpath(path)
+        for key, path in (kind_folders or {}).items()
+        if str(path or "").strip()
+    }
+    if not targets:
         return
     try:
         names = list(os.listdir(source_dir))
@@ -168,9 +209,9 @@ def organize_media_into_kinds(source_dir, media_kinds=None):
         if ext in _STAGING_EXTS:
             continue
         kind = _kind_for_ext(ext)
-        if not kind or kind not in kinds:
+        dest_dir = targets.get(kind)
+        if not dest_dir:
             continue
-        dest_dir = os.path.join(source_dir, _KIND_DIRS[kind])
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, name)
         if os.path.abspath(path) == os.path.abspath(dest):
@@ -702,7 +743,10 @@ def _yt_dlp_args(
             args.append("--keep-video")
     if want_image:
         args.extend(("--write-thumbnail", "--convert-thumbnails", "jpg"))
-    if want_image and not want_video and not want_music:
+    want_document = "document" in kinds
+    if want_document:
+        args.extend(("--write-description", "--write-info-json"))
+    if (want_image or want_document) and not want_video and not want_music:
         args.append("--skip-download")
     args.append(url)
     return args
@@ -740,11 +784,11 @@ def _download_one(
     url, output_dir, fragments, archive_path, ffmpeg_location,
     log, on_progress, should_stop, group, cookies_browser="",
     filename_template="", cookies_file="", dateafter="",
-    limit_rate="", media_kinds=None, source_folder="",
+    limit_rate="", media_kinds=None, source_folder="", kind_folders=None,
 ):
     check_stop(should_stop)
     kinds = normalize_media_kinds(media_kinds)
-    dest_dir = os.path.join(output_dir, source_folder) if source_folder else output_dir
+    dest_dir = resolve_item_dir(output_dir, source_folder)
     os.makedirs(dest_dir, exist_ok=True)
     on_progress(url, {"status": "downloading"})
 
@@ -803,7 +847,7 @@ def _download_one(
                 on_progress=on_progress, should_stop=should_stop,
                 media_kinds=kinds,
             ):
-                organize_media_into_kinds(dest_dir, kinds)
+                organize_media_into_kinds(dest_dir, kinds, kind_folders)
                 relocated = relocate_artifacts(dest_dir, kinds)
                 if relocated:
                     on_progress(url, {"filepath": relocated[0]})
@@ -812,7 +856,7 @@ def _download_one(
         except StopRequested:
             on_progress(url, {"status": "cancelled"})
             raise
-    organize_media_into_kinds(dest_dir, kinds)
+    organize_media_into_kinds(dest_dir, kinds, kind_folders)
     relocated = relocate_artifacts(dest_dir, kinds)
     if platform == "pinterest" and (code != 0 or not _has_downloaded_media(dest_dir)):
         try:
@@ -821,7 +865,7 @@ def _download_one(
                 on_progress=on_progress, should_stop=should_stop,
                 media_kinds=kinds,
             ):
-                organize_media_into_kinds(dest_dir, kinds)
+                organize_media_into_kinds(dest_dir, kinds, kind_folders)
                 relocated = relocate_artifacts(dest_dir, kinds)
                 if relocated:
                     on_progress(url, {"filepath": relocated[0]})
@@ -855,6 +899,8 @@ def download_urls(
     media_kinds=None,
     source_folders=None,
     group_by_source=True,
+    url_media_kinds=None,
+    kind_folders=None,
 ):
     """Download every item URL, `workers` at a time. Returns the number of failures."""
     output_root = output_root or default_output_root()
@@ -884,10 +930,11 @@ def download_urls(
                 url, output_dir, fragments, archive_path, ffmpeg_location,
                 log, on_progress, should_stop, group, cookies_browser,
                 filename_template, cookies_file, dateafter, limit_rate,
-                kinds,
+                normalize_media_kinds((url_media_kinds or {}).get(url) or kinds),
                 folders.get(url)
                 if url in folders
                 else (source_folder_name("", "", reel_id(url)) if group_by_source else ""),
+                kind_folders,
             ): url
             for url in urls
         }

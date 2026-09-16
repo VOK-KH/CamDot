@@ -38,7 +38,7 @@ class TrayController(QObject):
         super().__init__(window)
         self.window = window
         self.icon = _make_tray_icon(window)
-        self.icon.setIcon(icons.icon("app", "#1877f2", 64))
+        self.icon.setIcon(icons.icon("app", getattr(self.window, "_primary", "#1877f2"), 64))
         self.menu = QMenu(window)
         self._chunks = None
         self._workers = None
@@ -170,7 +170,7 @@ class TrayController(QObject):
         self.set_busy(self.window._thread is not None)
 
     def refresh_icon(self):
-        self.icon.setIcon(icons.icon("app", "#1877f2", 64))
+        self.icon.setIcon(icons.icon("app", getattr(self.window, "_primary", "#1877f2"), 64))
         for action, name in (
             (self.act_show, "app"),
             (self.act_start, "play"),

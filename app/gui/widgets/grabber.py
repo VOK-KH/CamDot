@@ -1,5 +1,17 @@
 """Desktop Link Grabber monitor as a floating tool window."""
-from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer, Signal
+import os
+
+from PySide6.QtCore import (
+    QEasingCurve,
+    QElapsedTimer,
+    QPoint,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -13,6 +25,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import icons
+from app.gui.constants import FLOAT_MARGIN
+
+SLIDE_MS = 280
 
 
 class GrabberPanel(QFrame):
@@ -55,6 +70,9 @@ class GrabberPanel(QFrame):
         self._tick = QTimer(self)
         self._tick.setInterval(self.TICK_MS)
         self._tick.timeout.connect(self._show_duration)
+        self._slide = QPropertyAnimation(self, b"pos", self)
+        self._slide.setDuration(SLIDE_MS)
+        self._slide.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
@@ -167,8 +185,69 @@ class GrabberPanel(QFrame):
             self._tick.start()
         self.abort_btn.setEnabled(True)
         self.set_readings(readings, url)
-        if self.isHidden():
+        appearing = self.isHidden()
+        if appearing:
             self.show()
+            self.raise_()
+            self.dock_bottom_right(animate=True)
+        elif not self.user_placed:
+            self.dock_bottom_right(animate=False)
+
+    def is_sliding(self):
+        return self._slide.state() == QPropertyAnimation.State.Running
+
+    def _can_animate(self):
+        return os.environ.get("QT_QPA_PLATFORM", "").lower() != "offscreen"
+
+    def bottom_right_pos(self):
+        """Park on the screen that holds the parent window (taskbar-aware)."""
+        self.adjustSize()
+        host = self.parentWidget() if isinstance(self.parentWidget(), QWidget) else self
+        screen = host.screen() if host is not None else None
+        screen = screen or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry() if screen is not None else self.geometry()
+        x = area.x() + area.width() - self.width() - FLOAT_MARGIN
+        y = area.y() + area.height() - self.height() - FLOAT_MARGIN
+        return QPoint(x, y)
+
+    def dock_bottom_right(self, animate=False):
+        if self.user_placed:
+            return
+        dest = self.bottom_right_pos()
+        self.raise_()
+        if animate and self._can_animate():
+            start = QPoint(dest.x(), dest.y() + self.height() + FLOAT_MARGIN)
+            self._slide.stop()
+            try:
+                self._slide.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self.move(start)
+            self._slide.setStartValue(start)
+            self._slide.setEndValue(dest)
+            self._slide.start()
+            return
+        self._slide.stop()
+        self.move(dest)
+
+    def slide_hide(self):
+        """Slide down off the bottom, then hide. Instant when animation is off."""
+        if self.isHidden():
+            return
+        if self.user_placed or not self._can_animate():
+            self.hide()
+            return
+        start = self.pos()
+        end = QPoint(start.x(), start.y() + self.height() + FLOAT_MARGIN)
+        self._slide.stop()
+        try:
+            self._slide.finished.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self._slide.finished.connect(self.hide)
+        self._slide.setStartValue(start)
+        self._slide.setEndValue(end)
+        self._slide.start()
 
     def set_readings(self, readings, url=""):
         """`readings` maps a field name to the text it should show."""

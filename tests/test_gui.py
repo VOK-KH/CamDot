@@ -26,10 +26,12 @@ from PySide6.QtWidgets import (
 
 from app.core import icons, theme
 from app.core.model import (
+    COL_ADDED,
     COL_CHECK,
     COL_DURATION,
     COL_FILE,
     COL_HOST,
+    COL_ICON,
     COL_ID,
     COL_INDEX,
     COL_PROGRESS,
@@ -47,9 +49,11 @@ from app.gui import (
     remember_recent,
 )
 from app.gui import window as window_module
+from app.gui.dialogs.alert import build_alert
 from app.gui.dialogs.links import AddLinksDialog
 from app.gui.dialogs.platforms import PlatformsDialog
 from app.gui.widgets import GrabberPanel
+from app.gui.widgets.loader import BOTTY_DONE, BottyClip, botty_clip_path, botty_load_path
 from app.core.fonts import setup_app_font
 from app.core.runtime import APP_FOLDER_NAME, default_output_root
 from app.gui.dialogs.settings import SettingsDialog
@@ -76,6 +80,7 @@ class Icons(unittest.TestCase):
             "status-cancelled",
             "platform-facebook", "platform-instagram", "platform-youtube",
             "platform-douyin", "platform-kuaishou", "platform-pinterest", "platform-generic",
+            "kind-video", "kind-music", "kind-image",
         ]
         for name in names:
             path = os.path.join(icons.icon_dir(), f"{name}.svg")
@@ -94,6 +99,22 @@ class Icons(unittest.TestCase):
         for mascot, badge in ALERT_ART.values():
             self.assertEqual(icons.art("botty", mascot, 64).height(), 64)
             self.assertFalse(icons.art("dialog", badge).isNull(), badge)
+
+    def test_botty_load_clip_is_bundled(self):
+        self.assertTrue(os.path.isfile(botty_load_path()), botty_load_path())
+
+    def test_botty_done_clip_is_bundled(self):
+        path = botty_clip_path(BOTTY_DONE)
+        self.assertTrue(os.path.isfile(path), path)
+
+    def test_download_done_alert_uses_the_done_clip(self):
+        box = build_alert(None, "done", "Downloads finished", "2 of 2 item(s) downloaded.")
+        clips = box.findChildren(BottyClip)
+        self.assertEqual(len(clips), 1)
+        self.assertEqual(clips[0]._clip, BOTTY_DONE)
+        clips[0].stop()
+        box.close()
+        box.deleteLater()
 
 
 class SourceNaming(unittest.TestCase):
@@ -175,7 +196,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_table_has_all_columns(self):
         self.assertEqual(self.window.table.model().columnCount(), len(COLUMNS))
-        self.assertEqual(COLUMNS[:2], ("#", ""))
+        self.assertEqual(COLUMNS[:4], ("#", "", "", "Name"))
 
     def test_status_bar_shows_version_label(self):
         from app import __version__
@@ -194,8 +215,9 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(header.visualIndex(COL_INDEX), 1)
 
     def test_extra_data_columns_start_hidden_and_can_be_shown(self):
-        for column in (COL_UPLOADER, COL_FILE, COL_URL):
+        for column in (COL_UPLOADER, COL_URL):
             self.assertTrue(self.window.table.isColumnHidden(column), COLUMNS[column])
+        self.assertFalse(self.window.table.isColumnHidden(COL_FILE))
         for column in (COL_HOST, COL_STATUS, COL_TITLE, COL_DURATION):
             self.assertFalse(self.window.table.isColumnHidden(column), COLUMNS[column])
         self.window._toggle_column(COL_UPLOADER, True)
@@ -235,6 +257,12 @@ class GuiSmoke(unittest.TestCase):
         self.window._reset_columns()
         self.assertEqual(header.visualIndex(COL_INDEX), 0)
         self.assertTrue(self.window.table.isColumnHidden(COL_URL))
+        self.assertEqual(header.visualIndex(COL_ICON), 2)
+        self.assertEqual(header.visualIndex(COL_TITLE), 3)
+        self.assertEqual(header.visualIndex(COL_HOST), 4)
+        self.assertEqual(header.visualIndex(COL_STATUS), 5)
+        self.assertEqual(header.visualIndex(COL_FILE), 13)
+        self.assertEqual(header.visualIndex(COL_ADDED), 15)
         self.assertEqual(self.window.table.columnWidth(COL_ID), COLUMN_WIDTHS[COL_ID])
 
     def test_locking_columns_stops_moving_and_resizing(self):
@@ -254,7 +282,7 @@ class GuiSmoke(unittest.TestCase):
         self.window.set_urls([{"url": URLS[0], "duration": 75}])
         self.window._on_progress(URLS[0], {"status": "done", "filepath": "C:/out/clip [111].mp4"})
         self.assertEqual(self.window.model.index(0, COL_DURATION).data(), "1:15")
-        self.assertEqual(self.window.model.index(0, COL_FILE).data(), "clip [111].mp4")
+        self.assertEqual(self.window.model.index(0, COL_FILE).data(), "C:/out/clip [111].mp4")
 
     def test_host_column_shows_the_domain_beside_the_logo(self):
         self.window.set_urls(["https://www.tiktok.com/@viralfinds_hub/video/7669545"])
@@ -315,6 +343,17 @@ class GuiSmoke(unittest.TestCase):
         window.resize(1200, 700)
         QApplication.processEvents()
         self.assertEqual(panel.pos(), stuck)
+
+    def test_grabber_monitor_docks_bottom_right_of_the_screen(self):
+        window = self.window
+        panel = window.grab_panel
+        window._show_grab_panel("Analyzing…", begin=True)
+        QApplication.processEvents()
+        dest = panel.bottom_right_pos()
+        self.assertEqual(panel.pos(), dest)
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.assertGreaterEqual(panel.x() + panel.width() + 12, screen.right() - 20)
+        self.assertGreaterEqual(panel.y() + panel.height() + 12, screen.bottom() - 20)
 
     def test_grabber_monitor_freezes_when_the_run_ends(self):
         window = self.window
@@ -435,6 +474,12 @@ class GuiSmoke(unittest.TestCase):
         )
         self.assertTrue(self.window.clip_toggle.isCheckable())
         self.assertEqual(self.window.collect_btn.text(), "Extract")
+        for button in (
+            self.window.add_new_btn, self.window.continue_btn, self.window.cancel_btn,
+            self.window.add_btn, self.window.download_btn, self.window.collect_btn,
+        ):
+            self.assertTrue(button.property("pill"))
+            self.assertIsNone(button.property("accent"))
 
     def test_add_new_links_button_carries_the_other_ways_in(self):
         menu = self.window.add_new_btn.menu()
@@ -472,14 +517,20 @@ class GuiSmoke(unittest.TestCase):
         self.assertTrue(self.window.views._kind_boxes["video"].isChecked())
         self.assertFalse(self.window.views._kind_boxes["music"].isChecked())
         self.assertFalse(self.window.views._kind_boxes["image"].isChecked())
+        self.assertFalse(self.window.views._kind_boxes["document"].isChecked())
+        self.assertIn("document", self.window.views._kind_boxes)
 
     def test_views_kinds_persist_in_settings(self):
         self.window.views._kind_boxes["music"].setChecked(True)
         self.window.views._kind_boxes["image"].setChecked(True)
+        dest = os.path.join(self.folder.name, "music-out")
+        os.makedirs(dest, exist_ok=True)
+        self.window.views.set_kind_folders({"music": dest})
         self.window._save_settings()
         self.assertEqual(self.window._settings.value("views_kinds"), "image,music,video")
         again = MainWindow(settings=self.window._settings)
         self.assertEqual(again.views.checked_kinds(), {"video", "music", "image"})
+        self.assertEqual(again.views.kind_folders()["music"], os.path.normpath(dest))
         again._quitting = True
         again.close()
         again.deleteLater()
@@ -704,6 +755,24 @@ class GuiSmoke(unittest.TestCase):
         window._hide_extract_loader()
         self.assertTrue(loader.isHidden())
 
+    def test_grabber_syncs_queued_urls_in_chunks(self):
+        urls = [f"https://www.facebook.com/reel/{n}" for n in range(1, 50)]
+        self.window._enqueue_grab_urls(urls)
+        self.assertLessEqual(self.window.grab_model.package_count(), 32)
+        self.window._drain_grab_sync()
+        self.assertEqual(self.window.grab_model.package_count(), 49)
+        self.assertFalse(self.window._grab_sync)
+
+    def test_extract_loader_bar_loops_while_busy(self):
+        loader = self.window.extract_loader
+        loader.show_busy("Extracting links")
+        self.assertTrue(loader.bar.is_looping())
+        self.assertTrue(os.path.isfile(botty_load_path()))
+        self.assertTrue(loader.mascot._player is not None)
+        loader.hide()
+        self.assertFalse(loader.bar.is_looping())
+        self.assertFalse(loader.mascot.is_playing())
+
     def test_waiting_login_updates_the_extract_loader(self):
         window = self.window
         window._collecting = True
@@ -814,12 +883,18 @@ class GuiSmoke(unittest.TestCase):
         self.window.grab_table.selectRow(0)
         titles = self._menu_titles(self.window.grab_table)
         self.assertIn("Add to downloads", titles)
+        self.assertIn("Properties", titles)
         self.assertIn("Open in browser", titles)
         self.assertIn("Copy URL", titles)
         self.assertIn("Copy caption", titles)
         self.assertIn("Invert checks", titles)
         self.assertIn("Move up", titles)
         self.assertIn("Move down", titles)
+        self.assertIn("Sort by Hoster", titles)
+        self.assertIn("Other", titles)
+        self.assertIn("Clean Up...", titles)
+        self.assertIn("Change Variant", titles)
+        self.assertNotIn("Remove from list", titles)
         self.assertNotIn("Show downloaded file", titles)
         self.assertNotIn("Open directory", titles)
         self.assertNotIn("Open reel in browser", titles)
@@ -830,19 +905,123 @@ class GuiSmoke(unittest.TestCase):
         titles = self._menu_titles(self.window.table)
         self.assertIn("Show downloaded file", titles)
         self.assertIn("Open directory", titles)
+        self.assertIn("Start selected", titles)
+        self.assertIn("Properties", titles)
         self.assertIn("Open reel in browser", titles)
         self.assertIn("Copy URL", titles)
         self.assertNotIn("Add to downloads", titles)
         self.assertNotIn("Open in browser", titles)
 
+    def test_properties_menu_lists_folder_and_rename(self):
+        self.window.set_urls(URLS)
+        self.window.table.selectRow(0)
+        menu = self.window._context_menu_for(self.window.table)
+        props = next(action.menu() for action in menu.actions() if action.text() == "Properties")
+        titles = [action.text() for action in props.actions() if action.text()]
+        self.assertIn("Rename…", titles)
+        self.assertIn("Set download directory…", titles)
+        self.assertIn("Set comment…", titles)
+        self.assertIn("Show properties panel", titles)
+
+    def test_save_to_column_shows_the_chosen_folder(self):
+        self.window.set_urls(URLS)
+        self.window.table.selectRow(0)
+        folder = os.path.join(self.folder.name, "pins")
+        self.window._apply_save_dir(folder, self.window._selected_reels())
+        self.assertEqual(self.window.model.reel_at(0).save_dir, folder)
+        self.assertEqual(self.window.model.index(0, COL_FILE).data(), folder)
+
+    def test_add_to_downloads_keeps_the_grabber_save_dir(self):
+        folder = os.path.join(self.folder.name, "from-grabber")
+        self.window.add_grab_urls([{"url": URLS[0], "save_dir": folder}])
+        self.window.grab_table.selectRow(0)
+        self.window._add_to_downloads()
+        self.assertEqual(self.window.model.reel_at(0).save_dir, folder)
+
+    def test_grabber_save_to_shows_output_path(self):
+        self.window.add_grab_urls([{"url": URLS[0], "title": "Clip"}])
+        expected = os.path.normpath(self.window._output_root())
+        self.assertEqual(self.window.grab_model.reel_at(0).save_dir, expected)
+        self.assertEqual(self.window.grab_model.index(0, COL_FILE).data(), expected)
+
+    def test_grabber_extract_lists_package_and_media_variants(self):
+        self.window.add_grab_urls([{"url": URLS[0], "title": "4K HDR Video"}])
+        self.assertEqual(self.window.grab_model.rowCount(), 5)
+        names = [
+            self.window.grab_model.index(row, COL_TITLE).data()
+            for row in range(5)
+        ]
+        self.assertTrue(names[0].endswith("4K HDR Video"))
+        self.assertIn("▶", names[0])
+        self.assertEqual(names[1].strip(), "Video")
+        self.assertEqual(names[2].strip(), "Audio")
+        self.assertEqual(names[3].strip(), "Image: Best Quality Image")
+        self.assertEqual(names[4].strip(), "Document")
+        self.window.grab_table.selectRow(0)
+        menu = self.window._context_menu_for(self.window.grab_table)
+        variant = next(action.menu() for action in menu.actions() if action.text() == "Change Variant")
+        labels = [action.text() for action in variant.actions() if action.text()]
+        self.assertIn("Add additional variants", labels)
+        self.assertIn("Image: Best Quality Image", labels)
+        self.window.tabs.setCurrentIndex(1)
+        self.window._set_image_quality("low")
+        image = self.window.grab_model.reel_at(3)
+        self.assertEqual(image.image_quality, "low")
+        self.assertIn("Low Quality Image", self.window.grab_model.index(3, COL_TITLE).data())
+        self.assertEqual(self.window.grab_proxy.rowCount(), 1)
+        self.assertIsNone(self.window.grab_model.index(0, COL_TITLE).data(
+            Qt.ItemDataRole.DecorationRole))
+        folder = self.window.grab_model.index(0, COL_ICON).data(
+            Qt.ItemDataRole.DecorationRole)
+        self.assertFalse(folder.isNull())
+        self.window._set_grab_packages_expanded(True)
+        self.assertEqual(self.window.grab_proxy.rowCount(), 2)
+        self.window.views._kind_boxes["music"].setChecked(True)
+        self.window.views._kind_boxes["image"].setChecked(True)
+        self.window.views._kind_boxes["document"].setChecked(True)
+        self.assertEqual(self.window.grab_proxy.rowCount(), 5)
+        self.assertIn("▼", self.window.grab_model.index(0, COL_TITLE).data())
+        other = [a.text() for a in self.window._other_grabber_menu().actions() if a.text()]
+        self.assertIn("Expand all packages", other)
+        self.assertIn("Collapse all packages", other)
+
     def test_grabber_empty_area_offers_add_and_paste(self):
         self.window.add_grab_urls(URLS)
         self.window.grab_table.clearSelection()
-        titles = self._menu_titles(self.window.grab_table)
+        titles = [t for t in self._menu_titles(self.window.grab_table) if t]
         self.assertEqual(
             titles,
-            ["Add new links", "Paste from clipboard", "Remove all from list"],
+            [
+                "Add New Links",
+                "Paste Links",
+                "Import list…",
+                "Start all Downloads",
+                "Properties",
+                "Sort by Hoster",
+                "Open in browser",
+                "Other",
+                "Clean Up...",
+                "Settings…",
+            ],
         )
+
+    def test_grabber_cleanup_removes_selected_when_confirm_is_skipped(self):
+        self.window.tabs.setCurrentIndex(1)
+        self.window._settings.setValue("cleanup_skip_confirm", True)
+        self.window.add_grab_urls(URLS)
+        self.window.grab_table.selectRow(0)
+        self.window._cleanup_links(True)
+        self.assertEqual(self.window.grab_model.urls(), [URLS[1]])
+
+    def test_grabber_sorts_by_hoster(self):
+        self.window.tabs.setCurrentIndex(1)
+        self.window.add_grab_urls([
+            "https://www.tiktok.com/@a/video/1",
+            "https://www.facebook.com/reel/2",
+        ])
+        self.window._sort_by_hoster()
+        header = self.window.grab_table.horizontalHeader()
+        self.assertEqual(header.sortIndicatorSection(), COL_HOST)
 
     def test_menu_bar_groups_the_actions(self):
         titles = [a.text() for a in self.window.menuBar().actions()]
@@ -857,6 +1036,14 @@ class GuiSmoke(unittest.TestCase):
         self.assertFalse(self.window.logo.pixmap().isNull())
         for button in (self.window.min_btn, self.window.max_btn, self.window.close_btn):
             self.assertFalse(button.icon().isNull(), button.toolTip())
+
+    def test_minimize_keeps_the_taskbar_entry(self):
+        self.window.show()
+        self.window.showMinimized()
+        QApplication.processEvents()
+        self.assertTrue(self.window.isMinimized())
+        self.assertFalse(self.window.isHidden())
+        self.window.showNormal()
 
     def test_window_has_no_native_frame(self):
         self.assertTrue(
@@ -1006,6 +1193,46 @@ class GuiSmoke(unittest.TestCase):
         self.window._start_collect()
         self.assertEqual(started, [])
 
+    def test_link_grabber_asks_video_or_playlist_like_extract(self):
+        mix = (
+            "https://www.youtube.com/watch?v=0jSgcE-sxeo"
+            "&list=RD0jSgcE-sxeo&start_radio=1"
+        )
+        started = []
+        self.window._run = lambda worker, merge=False: started.append(worker)
+        self.window.act_grabber.setChecked(True)
+
+        self.window._playlist_choice = lambda url: (
+            "https://www.youtube.com/watch?v=0jSgcE-sxeo", False,
+        )
+        self.window._queue_grab_urls([mix])
+        self.assertEqual(started[0].url, "https://www.youtube.com/watch?v=0jSgcE-sxeo")
+        self.assertFalse(started[0].feed)
+
+        started.clear()
+        self.window._grab_current = ""
+        self.window._playlist_choice = lambda url: (
+            "https://www.youtube.com/watch?v=0jSgcE-sxeo&list=RD0jSgcE-sxeo", True,
+        )
+        self.window._queue_grab_urls([mix])
+        self.assertTrue(started[0].feed)
+        self.assertIn("list=RD0jSgcE-sxeo", started[0].url)
+
+    def test_link_grabber_cancel_playlist_continues_the_queue(self):
+        mix = "https://www.youtube.com/watch?v=0jSgcE-sxeo&list=RD0jSgcE-sxeo&start_radio=1"
+        started = []
+        answers = [None, (URLS[0], None)]
+
+        def choose(url):
+            return answers.pop(0)
+
+        self.window._run = lambda worker, merge=False: started.append(worker)
+        self.window._playlist_choice = choose
+        self.window.act_grabber.setChecked(True)
+        self.window._queue_grab_urls([mix, URLS[0]])
+        QApplication.processEvents()
+        self.assertEqual(started[0].url, URLS[0])
+
     def test_link_grabber_queues_unique_background_links(self):
         self.window.act_grabber.setChecked(False)
         self.assertEqual(self.window._queue_grab_urls([URLS[0], URLS[0], URLS[1]]), 2)
@@ -1096,11 +1323,14 @@ class GuiSmoke(unittest.TestCase):
         self.window.model.apply_event(URLS[1], {"status": "done"})
         self.window._worker = type("W", (), {"mode": "download", "request_stop": lambda self: None})()
         with patch.object(window_module, "alert") as asked:
-            self.window._on_finished("")
+            with patch.object(window_module.telegram_notify, "notify_download_done") as posted:
+                self.window._on_finished("")
         self.assertEqual(asked.call_count, 1)
-        self.assertEqual(asked.call_args.args[1], "info")
+        self.assertEqual(asked.call_args.args[1], "done")
         self.assertEqual(asked.call_args.args[2], "Downloads finished")
         self.assertIn("2 of 2", asked.call_args.args[3])
+        posted.assert_called_once()
+        self.assertEqual(posted.call_args.args[1], "Downloads finished")
 
     def test_remove_uses_checked_rows_when_nothing_is_selected(self):
         self.window.set_urls(URLS)
@@ -1136,6 +1366,29 @@ class GuiSmoke(unittest.TestCase):
         finally:
             QApplication.instance().styleHints().setColorScheme = original
         self.assertEqual(asked, [Qt.ColorScheme.Light, Qt.ColorScheme.Dark])
+
+    def test_light_theme_paints_dark_icons_on_pills(self):
+        self.window._dark = False
+        self.window._apply_theme()
+        self.assertEqual(
+            self.window._button_icon_color(self.window.add_new_btn),
+            theme.ICON_ON_LIGHT,
+        )
+        self.assertEqual(self.window._icon_color(), theme.ICON_ON_LIGHT)
+
+    def test_settings_appearance_saves_style_and_primary(self):
+        dialog = SettingsDialog(self.window._settings, self.window)
+        dialog.theme_style.setCurrentIndex(dialog.theme_style.findData(False))
+        dialog.primary.set_hex("#cc3366")
+        dialog.accept()
+        self.assertFalse(self.window._settings.value("dark", type=bool))
+        self.assertEqual(self.window._settings.value("theme_primary"), "#cc3366")
+        self.window._restore_tool_settings()
+        self.window._apply_theme()
+        self.assertFalse(self.window._dark)
+        self.assertEqual(self.window._primary, "#cc3366")
+        self.assertIn("#cc3366", QApplication.instance().styleSheet())
+        self.assertNotIn("#1877f2", QApplication.instance().styleSheet())
 
     def test_settings_round_trip(self):
         self.window.source_edit.setText("https://www.facebook.com/jireel/reels")
@@ -1194,9 +1447,55 @@ class GuiSmoke(unittest.TestCase):
 
     def test_settings_dialog_saves_group_downloads(self):
         dialog = SettingsDialog(self.window._settings, self.window)
-        dialog.group_downloads.setChecked(False)
+        self.assertFalse(dialog.group_downloads.isChecked())
+        dialog.group_downloads.setChecked(True)
         dialog.accept()
-        self.assertFalse(self.window._settings.value("group_downloads", type=bool))
+        self.assertTrue(self.window._settings.value("group_downloads", type=bool))
+
+    def test_settings_tabs_split_download_grabber_and_privacy(self):
+        dialog = SettingsDialog(self.window._settings, self.window)
+        titles = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
+        self.assertEqual(
+            titles,
+            ["General", "Download", "Grabber", "Notifications", "Appearance", "Tools"],
+        )
+        general = dialog.tabs.widget(0)
+        download = dialog.tabs.widget(1)
+        grabber = dialog.tabs.widget(2)
+        notify = dialog.tabs.widget(3)
+        self.assertTrue(general.isAncestorOf(dialog.telegram_reports))
+        self.assertTrue(general.isAncestorOf(dialog.close_to_tray))
+        self.assertTrue(download.isAncestorOf(dialog.workers))
+        self.assertTrue(download.isAncestorOf(dialog.output))
+        self.assertTrue(grabber.isAncestorOf(dialog.link_grabber))
+        self.assertTrue(grabber.isAncestorOf(dialog.grab_auto_confirm))
+        self.assertTrue(notify.isAncestorOf(dialog.notify_token))
+        self.assertTrue(notify.isAncestorOf(dialog.notify_approve))
+
+    def test_settings_notifications_approve_start_account(self):
+        dialog = SettingsDialog(self.window._settings, self.window)
+        dialog.notify_enabled.setChecked(True)
+        dialog.notify_token.setText("123:token")
+        start = {
+            "update_id": 8,
+            "message": {
+                "text": "/start",
+                "chat": {"id": 42, "first_name": "Ada", "username": "ada"},
+            },
+        }
+        with patch("app.core.telegram_notify.fetch_updates", return_value=([start], 9)):
+            with patch("app.core.telegram_notify._reply"):
+                dialog._refresh_notify_accounts()
+        self.assertEqual(dialog.notify_accounts.rowCount(), 1)
+        self.assertEqual(dialog._notify_rows[0]["status"], "pending")
+        dialog.notify_accounts.selectRow(0)
+        with patch("app.core.telegram_notify.send_status_reply") as replied:
+            dialog._set_selected_notify_status("approved")
+        replied.assert_called_once()
+        self.assertEqual(dialog._notify_rows[0]["status"], "approved")
+        dialog.accept()
+        self.assertTrue(self.window._settings.value("telegram_notify_enabled", type=bool))
+        self.assertEqual(self.window._settings.value("telegram_notify_bot_token"), "123:token")
 
     def test_settings_tools_tab_packs_fields_to_the_top(self):
         dialog = SettingsDialog(self.window._settings, self.window)
@@ -1351,12 +1650,35 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(worker.media_kinds, {"video", "image"})
         self.assertEqual(worker.source_folders, folders)
 
+    def test_job_worker_emits_collect_results_in_chunks(self):
+        from app.gui.jobs import GRAB_EMIT_CHUNK, JobWorker
+
+        batches = []
+        items = [{"url": f"https://www.facebook.com/reel/{n}"} for n in range(70)]
+
+        def fake_collect(*_args, **kwargs):
+            on_entries = kwargs["on_entries"]
+            on_entries(items)
+            return "", items
+
+        worker = JobWorker("collect", "jireel", url=items[0]["url"])
+        worker.urls_ready.connect(batches.append)
+        worker.finished.connect(lambda _msg: None)
+        with patch("app.gui.jobs.collect_entries", side_effect=fake_collect):
+            worker.run()
+        sizes = [len(batch) for batch in batches]
+        self.assertEqual(sum(sizes), 70)
+        self.assertTrue(all(size <= GRAB_EMIT_CHUNK for size in sizes))
+        self.assertGreater(len(batches), 1)
+
     def test_grabber_gear_lists_extract_options(self):
         self.window.tabs.setCurrentIndex(1)
         menu = self.window._build_options_menu()
         labels = [a.text() for a in menu.actions() if a.text()]
         for name in (
-            "Add at top", "Auto confirm", "Autostart Download",
+            "Add New Links", "Paste Links", "Import list…", "Start all Downloads",
+            "Add at top", "Auto confirm", "Autostart Download", "Sort by Hoster",
+            "Clean Up...",
             "Overview Panel visible", "Sidebar visible",
             "Customize this Bottom Panel", "Package or Link Properties",
         ):
