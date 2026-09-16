@@ -6,13 +6,10 @@ from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFileDialog,
     QFrame,
-    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -65,7 +62,6 @@ class ViewsPanel(QFrame):
         self.setMaximumWidth(260)
         self._unchecked_hosts = set()
         self._kind_boxes = {}
-        self._kind_folder_btns = {}
         self._kind_folders = {key: "" for key, _label in MEDIA_KINDS}
         self._icon_color = "#e7ecf3"
         self._fetch_started = set()
@@ -81,27 +77,25 @@ class ViewsPanel(QFrame):
         column.addWidget(title)
 
         for key, label in MEDIA_KINDS:
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(2)
             box = QCheckBox(label)
             box.setObjectName("viewsKind")
             box.setProperty("iconName", KIND_ICONS[key])
             box.setIconSize(KIND_ICON_SIZE)
             box.setChecked(key == "video")
             box.toggled.connect(lambda _checked=False: self.filter_changed.emit())
-            folder_btn = QToolButton()
-            folder_btn.setObjectName("viewsFolderBtn")
-            folder_btn.setProperty("iconName", "folder")
-            folder_btn.setAutoRaise(True)
-            folder_btn.setToolTip("Choose the save folder for this type")
-            folder_btn.clicked.connect(lambda _=False, kind=key: self._pick_kind_folder(kind))
             self._kind_boxes[key] = box
-            self._kind_folder_btns[key] = folder_btn
-            row_layout.addWidget(box, 1)
-            row_layout.addWidget(folder_btn)
-            column.addWidget(row)
+            column.addWidget(box)
+
+        self.folder_group = QCheckBox("Folder group")
+        self.folder_group.setObjectName("viewsFolderGroup")
+        self.folder_group.setProperty("iconName", "folder")
+        self.folder_group.setIconSize(KIND_ICON_SIZE)
+        self.folder_group.setToolTip(
+            "Group each link as a folder in the list and save files into a "
+            "subfolder named from the caption."
+        )
+        self.folder_group.toggled.connect(lambda _checked=False: self.filter_changed.emit())
+        column.addWidget(self.folder_group)
 
         divider = QFrame()
         divider.setObjectName("viewsDivider")
@@ -127,10 +121,9 @@ class ViewsPanel(QFrame):
         for key, box in self._kind_boxes.items():
             box.setIcon(icons.icon(KIND_ICONS[key], color, 16))
             box.setIconSize(KIND_ICON_SIZE)
-        for button in self._kind_folder_btns.values():
-            button.setIcon(icons.icon("folder", color, 14))
+        self.folder_group.setIcon(icons.icon("folder", color, 16))
+        self.folder_group.setIconSize(KIND_ICON_SIZE)
         self._refresh_host_icons()
-        self._refresh_folder_tooltips()
 
     def kind_folders(self):
         """Absolute save folders per type; empty means the main download folder."""
@@ -140,26 +133,16 @@ class ViewsPanel(QFrame):
         folders = folders or {}
         for key, _label in MEDIA_KINDS:
             self._kind_folders[key] = str(folders.get(key) or "").strip()
-        self._refresh_folder_tooltips()
 
-    def _pick_kind_folder(self, kind):
-        start = self._kind_folders.get(kind) or ""
-        path = QFileDialog.getExistingDirectory(
-            self, f"Save {kind} files to", start,
-        )
-        if not path:
-            return
-        self._kind_folders[kind] = os.path.normpath(path)
-        self._refresh_folder_tooltips()
-        self.filter_changed.emit()
+    def folder_group_enabled(self):
+        return self.folder_group.isChecked()
 
-    def _refresh_folder_tooltips(self):
-        for key, button in self._kind_folder_btns.items():
-            path = self._kind_folders.get(key) or ""
-            if path:
-                button.setToolTip(f"Save {key} files to {path}")
-            else:
-                button.setToolTip("Choose the save folder for this type")
+    def set_folder_group(self, enabled, emit=True):
+        self.folder_group.blockSignals(True)
+        self.folder_group.setChecked(bool(enabled))
+        self.folder_group.blockSignals(False)
+        if emit:
+            self.filter_changed.emit()
 
     def checked_kinds(self):
         return {key for key, box in self._kind_boxes.items() if box.isChecked()}

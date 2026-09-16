@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt, QThreadPool
+from PySide6.QtCore import QEvent, QPoint, QPointF, QItemSelectionModel, QSettings, Qt, QThreadPool
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -39,6 +39,7 @@ from app.core.model import (
     COL_TITLE,
     COL_UPLOADER,
     COL_URL,
+    COL_VARIANT,
     COLUMNS,
 )
 from app.gui import (
@@ -48,6 +49,7 @@ from app.gui import (
     derive_channel,
     remember_recent,
 )
+from app.gui.constants import CUSTOM_WINDOW_CHROME
 from app.gui import window as window_module
 from app.gui.dialogs.alert import build_alert
 from app.gui.dialogs.links import AddLinksDialog
@@ -194,9 +196,20 @@ class GuiSmoke(unittest.TestCase):
         self.folder.cleanup()
         self.state_folder.cleanup()
 
+    def _table_header(self, table):
+        return table.header()
+
+    def _select_table_row(self, table, row, column=0):
+        index = table.model().index(row, column)
+        table.selectionModel().select(
+            index,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
     def test_table_has_all_columns(self):
         self.assertEqual(self.window.table.model().columnCount(), len(COLUMNS))
-        self.assertEqual(COLUMNS[:4], ("#", "", "", "Name"))
+        self.assertEqual(COLUMNS[:5], ("#", "", "", "Name", "Variant"))
 
     def test_status_bar_shows_version_label(self):
         from app import __version__
@@ -205,7 +218,7 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window.version_label.text(), f"v{__version__}")
 
     def test_index_comes_before_the_checkbox_and_columns_can_move(self):
-        header = self.window.table.horizontalHeader()
+        header = self._table_header(self.window.table)
         self.assertTrue(header.sectionsMovable())
         self.assertTrue(header.isFirstSectionMovable())
         self.assertEqual(header.visualIndex(COL_INDEX), 0)
@@ -229,7 +242,7 @@ class GuiSmoke(unittest.TestCase):
         menu, handlers = self.window._build_column_menu()
         labels = [a.text() for a in menu.actions() if not a.isSeparator()]
         self.assertNotIn("#", labels)                      # pinned, never hideable
-        for name in ("Hoster", "Status", "Name", "Uploader", "Save to", "Download from", "Added"):
+        for name in ("Hoster", "Status", "Name", "Variant", "Uploader", "Save to", "Download from", "Added"):
             self.assertIn(name, labels)
         self.assertIn("Reset columns", labels)
         self.assertIn("Lock column layout", labels)
@@ -250,7 +263,7 @@ class GuiSmoke(unittest.TestCase):
         self.assertFalse(self.window.table.isColumnHidden(COL_UPLOADER))
 
     def test_reset_columns_restores_order_and_visibility(self):
-        header = self.window.table.horizontalHeader()
+        header = self._table_header(self.window.table)
         self.window._toggle_column(COL_URL, True)
         header.moveSection(header.visualIndex(COL_TITLE), 0)
         self.window.table.setColumnWidth(COL_ID, 400)
@@ -259,14 +272,15 @@ class GuiSmoke(unittest.TestCase):
         self.assertTrue(self.window.table.isColumnHidden(COL_URL))
         self.assertEqual(header.visualIndex(COL_ICON), 2)
         self.assertEqual(header.visualIndex(COL_TITLE), 3)
-        self.assertEqual(header.visualIndex(COL_HOST), 4)
-        self.assertEqual(header.visualIndex(COL_STATUS), 5)
-        self.assertEqual(header.visualIndex(COL_FILE), 13)
-        self.assertEqual(header.visualIndex(COL_ADDED), 15)
+        self.assertEqual(header.visualIndex(COL_VARIANT), 4)
+        self.assertEqual(header.visualIndex(COL_HOST), 5)
+        self.assertEqual(header.visualIndex(COL_STATUS), 6)
+        self.assertEqual(header.visualIndex(COL_FILE), 14)
+        self.assertEqual(header.visualIndex(COL_ADDED), 16)
         self.assertEqual(self.window.table.columnWidth(COL_ID), COLUMN_WIDTHS[COL_ID])
 
     def test_locking_columns_stops_moving_and_resizing(self):
-        header = self.window.table.horizontalHeader()
+        header = self._table_header(self.window.table)
         self.window._set_columns_locked(True)
         self.assertFalse(header.sectionsMovable())
         self.assertEqual(
@@ -457,7 +471,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_toolbar_move_reorders_selected_download_rows(self):
         self.window.set_urls(URLS)
-        self.window.table.selectRow(1)
+        self._select_table_row(self.window.table, 1)
         self.window.up_btn.click()
         self.assertEqual(self.window.model.urls(), [URLS[1], URLS[0]])
 
@@ -880,7 +894,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_grabber_context_menu_is_a_review_list(self):
         self.window.add_grab_urls(URLS)
-        self.window.grab_table.selectRow(0)
+        self._select_table_row(self.window.grab_table, 0)
         titles = self._menu_titles(self.window.grab_table)
         self.assertIn("Add to downloads", titles)
         self.assertIn("Properties", titles)
@@ -901,7 +915,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_download_context_menu_still_shows_the_file(self):
         self.window.set_urls(URLS)
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         titles = self._menu_titles(self.window.table)
         self.assertIn("Show downloaded file", titles)
         self.assertIn("Open directory", titles)
@@ -914,7 +928,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_properties_menu_lists_folder_and_rename(self):
         self.window.set_urls(URLS)
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         menu = self.window._context_menu_for(self.window.table)
         props = next(action.menu() for action in menu.actions() if action.text() == "Properties")
         titles = [action.text() for action in props.actions() if action.text()]
@@ -925,7 +939,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_save_to_column_shows_the_chosen_folder(self):
         self.window.set_urls(URLS)
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         folder = os.path.join(self.folder.name, "pins")
         self.window._apply_save_dir(folder, self.window._selected_reels())
         self.assertEqual(self.window.model.reel_at(0).save_dir, folder)
@@ -934,7 +948,7 @@ class GuiSmoke(unittest.TestCase):
     def test_add_to_downloads_keeps_the_grabber_save_dir(self):
         folder = os.path.join(self.folder.name, "from-grabber")
         self.window.add_grab_urls([{"url": URLS[0], "save_dir": folder}])
-        self.window.grab_table.selectRow(0)
+        self._select_table_row(self.window.grab_table, 0)
         self.window._add_to_downloads()
         self.assertEqual(self.window.model.reel_at(0).save_dir, folder)
 
@@ -944,43 +958,53 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window.grab_model.reel_at(0).save_dir, expected)
         self.assertEqual(self.window.grab_model.index(0, COL_FILE).data(), expected)
 
+    def test_grabber_single_video_is_one_flat_row(self):
+        self.window.add_grab_urls([{"url": URLS[0], "title": "Clip"}])
+        self.assertEqual(self.window.grab_model.rowCount(), 1)
+        self.assertEqual(self.window.grab_model.index(0, COL_VARIANT).data(), "")
+
     def test_grabber_extract_lists_package_and_media_variants(self):
+        self.window.views.set_checked_kinds(
+            {"video", "music", "image", "document"}, emit=False,
+        )
+        self.window.views.set_folder_group(True, emit=False)
         self.window.add_grab_urls([{"url": URLS[0], "title": "4K HDR Video"}])
         self.assertEqual(self.window.grab_model.rowCount(), 5)
-        names = [
-            self.window.grab_model.index(row, COL_TITLE).data()
-            for row in range(5)
+        self.assertTrue(
+            self.window.grab_model.index(0, COL_TITLE).data().endswith("4K HDR Video")
+        )
+        variants = [
+            self.window.grab_model.index(row, COL_VARIANT).data()
+            for row in range(1, 5)
         ]
-        self.assertTrue(names[0].endswith("4K HDR Video"))
-        self.assertIn("▶", names[0])
-        self.assertEqual(names[1].strip(), "Video")
-        self.assertEqual(names[2].strip(), "Audio")
-        self.assertEqual(names[3].strip(), "Image: Best Quality Image")
-        self.assertEqual(names[4].strip(), "Document")
-        self.window.grab_table.selectRow(0)
+        self.assertEqual(variants, ["Video", "Audio", "Image: Best Quality Image", "Document"])
+        self._select_table_row(self.window.grab_table, 0)
         menu = self.window._context_menu_for(self.window.grab_table)
         variant = next(action.menu() for action in menu.actions() if action.text() == "Change Variant")
         labels = [action.text() for action in variant.actions() if action.text()]
         self.assertIn("Add additional variants", labels)
         self.assertIn("Image: Best Quality Image", labels)
         self.window.tabs.setCurrentIndex(1)
+        self._select_table_row(self.window.grab_table, 0)
         self.window._set_image_quality("low")
         image = self.window.grab_model.reel_at(3)
         self.assertEqual(image.image_quality, "low")
-        self.assertIn("Low Quality Image", self.window.grab_model.index(3, COL_TITLE).data())
-        self.assertEqual(self.window.grab_proxy.rowCount(), 1)
+        self.assertIn(
+            "Low Quality Image",
+            self.window.grab_model.index(3, COL_VARIANT).data(),
+        )
+        self.window.grab_proxy.set_kinds({"video"})
+        self.assertEqual(self.window.grab_proxy.rowCount(), 2)
         self.assertIsNone(self.window.grab_model.index(0, COL_TITLE).data(
             Qt.ItemDataRole.DecorationRole))
         folder = self.window.grab_model.index(0, COL_ICON).data(
             Qt.ItemDataRole.DecorationRole)
         self.assertFalse(folder.isNull())
         self.window._set_grab_packages_expanded(True)
-        self.assertEqual(self.window.grab_proxy.rowCount(), 2)
-        self.window.views._kind_boxes["music"].setChecked(True)
-        self.window.views._kind_boxes["image"].setChecked(True)
-        self.window.views._kind_boxes["document"].setChecked(True)
+        self.assertEqual(self.window.grab_tree.rowCount(), 1)
+        self.assertNotIn("▼", self.window.grab_model.index(0, COL_TITLE).data())
+        self.window._apply_views_filter()
         self.assertEqual(self.window.grab_proxy.rowCount(), 5)
-        self.assertIn("▼", self.window.grab_model.index(0, COL_TITLE).data())
         other = [a.text() for a in self.window._other_grabber_menu().actions() if a.text()]
         self.assertIn("Expand all packages", other)
         self.assertIn("Collapse all packages", other)
@@ -1009,7 +1033,7 @@ class GuiSmoke(unittest.TestCase):
         self.window.tabs.setCurrentIndex(1)
         self.window._settings.setValue("cleanup_skip_confirm", True)
         self.window.add_grab_urls(URLS)
-        self.window.grab_table.selectRow(0)
+        self._select_table_row(self.window.grab_table, 0)
         self.window._cleanup_links(True)
         self.assertEqual(self.window.grab_model.urls(), [URLS[1]])
 
@@ -1020,7 +1044,7 @@ class GuiSmoke(unittest.TestCase):
             "https://www.facebook.com/reel/2",
         ])
         self.window._sort_by_hoster()
-        header = self.window.grab_table.horizontalHeader()
+        header = self._table_header(self.window.grab_table)
         self.assertEqual(header.sortIndicatorSection(), COL_HOST)
 
     def test_menu_bar_groups_the_actions(self):
@@ -1031,11 +1055,17 @@ class GuiSmoke(unittest.TestCase):
 
     def test_menu_bar_corners_hold_the_logo_and_window_controls(self):
         bar = self.window.menu_bar
-        self.assertIs(bar.cornerWidget(Qt.Corner.TopLeftCorner), self.window.logo)
-        self.assertIs(bar.cornerWidget(Qt.Corner.TopRightCorner), self.window.win_controls)
         self.assertFalse(self.window.logo.pixmap().isNull())
-        for button in (self.window.min_btn, self.window.max_btn, self.window.close_btn):
-            self.assertFalse(button.icon().isNull(), button.toolTip())
+        if CUSTOM_WINDOW_CHROME:
+            self.assertIs(bar.cornerWidget(Qt.Corner.TopLeftCorner), self.window.logo)
+            self.assertIs(bar.cornerWidget(Qt.Corner.TopRightCorner), self.window.win_controls)
+            for button in (self.window.min_btn, self.window.max_btn, self.window.close_btn):
+                self.assertFalse(button.icon().isNull(), button.toolTip())
+        else:
+            self.assertIsNone(bar.cornerWidget(Qt.Corner.TopLeftCorner))
+            self.assertIsNone(bar.cornerWidget(Qt.Corner.TopRightCorner))
+            self.assertIs(self.window.logo.parentWidget(), self.window.start_btn.parentWidget())
+            self.assertIsNone(self.window.win_controls)
 
     def test_minimize_keeps_the_taskbar_entry(self):
         self.window.show()
@@ -1046,11 +1076,12 @@ class GuiSmoke(unittest.TestCase):
         self.window.showNormal()
 
     def test_window_has_no_native_frame(self):
-        self.assertTrue(
-            self.window.windowFlags() & Qt.WindowType.FramelessWindowHint
-        )
+        frameless = bool(self.window.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        self.assertEqual(frameless, CUSTOM_WINDOW_CHROME)
 
     def test_maximise_button_flips_to_restore(self):
+        if not CUSTOM_WINDOW_CHROME:
+            self.skipTest("custom window controls are Windows-only")
         self.window._toggle_maximized()
         self.assertTrue(self.window.isMaximized())
         self.assertEqual(self.window.max_btn.property("iconName"), "win-restore")
@@ -1059,6 +1090,8 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window.max_btn.property("iconName"), "win-maximize")
 
     def test_frame_edges_only_grab_the_window_border(self):
+        if not CUSTOM_WINDOW_CHROME:
+            self.skipTest("frame resize band is Windows-only")
         window = self.window
         self.assertFalse(window._resize_edges(QPoint(400, 300)))
         self.assertEqual(
@@ -1086,6 +1119,8 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(window.start_btn.parent().width(), window.width())
 
     def test_edge_band_grabs_presses_that_land_on_a_child(self):
+        if not CUSTOM_WINDOW_CHROME:
+            self.skipTest("frame resize band is Windows-only")
         window = self.window
         window.show()
         QApplication.processEvents()
@@ -1138,7 +1173,7 @@ class GuiSmoke(unittest.TestCase):
     def test_view_menu_locks_the_column_layout(self):
         self.window.act_lock_columns.trigger()
         self.assertTrue(self.window._columns_locked)
-        self.assertFalse(self.window.table.horizontalHeader().sectionsMovable())
+        self.assertFalse(self._table_header(self.window.table).sectionsMovable())
         self.window.act_lock_columns.trigger()
         self.assertFalse(self.window._columns_locked)
 
@@ -1155,7 +1190,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_edit_menu_copies_selected_rows(self):
         self.window.set_urls(URLS)
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         self.window._copy_urls()
         self.assertEqual(QApplication.clipboard().text(), URLS[0])
 
@@ -1273,7 +1308,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_remove_selected_drops_rows_from_the_list(self):
         self.window.set_urls(URLS)
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         self.window._remove_selected()
         self.assertEqual(self.window.model.urls(), [URLS[1]])
         self.assertEqual(self.window.counter.text(), "1 ● 0")
@@ -1284,7 +1319,7 @@ class GuiSmoke(unittest.TestCase):
             f.write(b"x")
         self.window.set_urls(URLS)
         self.window.model.apply_event(URLS[0], {"status": "done", "filepath": path})
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.Yes) as asked:
             self.window._remove_selected()
         self.assertEqual(asked.call_args.args[1], "question")
@@ -1297,7 +1332,7 @@ class GuiSmoke(unittest.TestCase):
             f.write(b"x")
         self.window.set_urls(URLS)
         self.window.model.apply_event(URLS[0], {"status": "done", "filepath": path})
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         with patch.object(window_module, "alert", return_value=QMessageBox.StandardButton.No):
             self.window._remove_selected()
         self.assertTrue(os.path.isfile(path))
@@ -1424,7 +1459,7 @@ class GuiSmoke(unittest.TestCase):
         dialog = SettingsDialog(self.window._settings, self.window)
         dialog.channel.setText("my page")
         dialog.output.setText("downloads")
-        dialog.filename.setText("%(id)s.%(ext)s")
+        dialog._set_filename_preset("id")
         dialog.chrome.setText("C:/Tools/chrome.exe")
         dialog.ffmpeg.setText("C:/Tools/ffmpeg.exe")
         dialog.workers.setValue(6)
@@ -1436,6 +1471,7 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window._settings.value("channel"), "my page")
         self.assertEqual(self.window._settings.value("output_root"), "downloads")
         self.assertEqual(self.window._settings.value("filename_template"), "%(id)s.%(ext)s")
+        self.assertEqual(self.window._settings.value("filename_preset"), "id")
         self.assertEqual(self.window._settings.value("chrome_binary"), "C:/Tools/chrome.exe")
         self.assertEqual(self.window._settings.value("ffmpeg_location"), "C:/Tools/ffmpeg.exe")
         self.assertEqual(int(self.window._settings.value("workers")), 6)
@@ -1550,7 +1586,7 @@ class GuiSmoke(unittest.TestCase):
 
     def test_properties_panel_updates_the_selected_title(self):
         self.window.set_urls([{"url": URLS[0], "title": "Old name"}])
-        self.window.table.selectRow(0)
+        self._select_table_row(self.window.table, 0)
         self.window._toggle_properties(True)
         self.assertFalse(self.window.properties.isHidden())
         self.assertEqual(self.window.properties.name.text(), "Old name")

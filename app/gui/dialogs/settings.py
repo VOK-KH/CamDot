@@ -28,7 +28,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import telegram_notify
-from app.core.download import DEFAULT_FRAGMENTS, DEFAULT_WORKERS, OUTPUT_TEMPLATE, resolve_filename_template
+from app.core.download import (
+    DEFAULT_FILENAME_PRESET,
+    DEFAULT_FRAGMENTS,
+    DEFAULT_WORKERS,
+    FILENAME_PRESETS,
+    OUTPUT_TEMPLATE,
+    filename_preset_for_template,
+    filename_template_for_preset,
+    resolve_filename_template,
+)
 from app.core.runtime import default_output_root, resolve_output_root
 from app.core.theme import DEFAULT_DARK, DEFAULT_PRIMARY, THEME_STYLES, normalize_hex
 
@@ -194,12 +203,27 @@ class SettingsDialog(QDialog):
             "Off by default. When on, CamDot adds a caption folder under the save path.\n"
             "Prefer Set download directory on the table for a shared folder."
         )
+        self.filename_preset = QComboBox()
+        for key, label, _fmt in FILENAME_PRESETS:
+            self.filename_preset.addItem(label, key)
+        self.filename_preset.addItem("Custom", "custom")
+        self.filename_preset.setToolTip(
+            "How each finished file is named inside its save folder."
+        )
         self.filename = QLineEdit()
         self.filename.setPlaceholderText(OUTPUT_TEMPLATE)
         self.filename.setToolTip(
-            "File name inside the download folder. "
-            "Default uses the caption or title, then the id."
+            "yt-dlp output template. Choose a preset above, or pick Custom "
+            "and edit this field."
         )
+        self.filename_preset.currentIndexChanged.connect(self._on_filename_preset_changed)
+        self.filename.textChanged.connect(self._sync_filename_preset)
+        filename_row = QWidget()
+        filename_layout = QVBoxLayout(filename_row)
+        filename_layout.setContentsMargins(0, 0, 0, 0)
+        filename_layout.setSpacing(6)
+        filename_layout.addWidget(self.filename_preset)
+        filename_layout.addWidget(self.filename)
         self.workers = QSpinBox()
         self.workers.setRange(1, 16)
         self.fragments = QSpinBox()
@@ -216,7 +240,7 @@ class SettingsDialog(QDialog):
         speed_layout.addWidget(self.speed_limit, 1)
         form.addRow("Download folder", self.output)
         form.addRow("", self.group_downloads)
-        form.addRow("File name", self.filename)
+        form.addRow("File name", filename_row)
         form.addRow("Parallel downloads", self.workers)
         form.addRow("Fragments per item", self.fragments)
         form.addRow("Download speed", speed_row)
@@ -412,12 +436,52 @@ class SettingsDialog(QDialog):
         tools_form.addRow("Browser profile", self.cookies_profile)
         tools_form.addRow("Cookie / cURL", self.cookies_curl)
 
+    def _set_filename_preset(self, key, emit=False):
+        index = self.filename_preset.findData(key)
+        if index < 0:
+            index = self.filename_preset.findData("custom")
+        self.filename_preset.blockSignals(True)
+        self.filename_preset.setCurrentIndex(max(index, 0))
+        self.filename_preset.blockSignals(False)
+        custom = key == "custom"
+        self.filename.setReadOnly(not custom)
+        if not custom:
+            template = filename_template_for_preset(key) or OUTPUT_TEMPLATE
+            self.filename.blockSignals(True)
+            self.filename.setText(template)
+            self.filename.blockSignals(False)
+
+    def _on_filename_preset_changed(self, _index=-1):
+        key = self.filename_preset.currentData()
+        if key == "custom":
+            self.filename.setReadOnly(False)
+            self.filename.setFocus()
+            return
+        self._set_filename_preset(key)
+
+    def _sync_filename_preset(self):
+        if self.filename.isReadOnly():
+            return
+        key = filename_preset_for_template(self.filename.text())
+        index = self.filename_preset.findData(key)
+        if index >= 0 and self.filename_preset.currentIndex() != index:
+            self.filename_preset.blockSignals(True)
+            self.filename_preset.setCurrentIndex(index)
+            self.filename_preset.blockSignals(False)
+
     def load(self):
         get = self.settings.value
         self.channel.setText(get("channel", "", str))
         self.output.setText(resolve_output_root(get("output_root", "", str)))
         self.group_downloads.setChecked(get("group_downloads", False, bool))
-        self.filename.setText(get("filename_template", OUTPUT_TEMPLATE, str))
+        saved = get("filename_template", OUTPUT_TEMPLATE, str)
+        preset = get("filename_preset", "", str) or filename_preset_for_template(saved)
+        if preset == "custom":
+            self.filename.setReadOnly(False)
+            self.filename.setText(resolve_filename_template(saved))
+            self._set_filename_preset("custom")
+        else:
+            self._set_filename_preset(preset or DEFAULT_FILENAME_PRESET)
         self.workers.setValue(int(get("workers", DEFAULT_WORKERS)))
         self.fragments.setValue(int(get("fragments", DEFAULT_FRAGMENTS)))
         dark = get("dark", DEFAULT_DARK, bool)
@@ -456,7 +520,7 @@ class SettingsDialog(QDialog):
         self.channel.clear()
         self.output.setText(default_output_root())
         self.group_downloads.setChecked(False)
-        self.filename.setText(OUTPUT_TEMPLATE)
+        self._set_filename_preset(DEFAULT_FILENAME_PRESET)
         self.workers.setValue(DEFAULT_WORKERS)
         self.fragments.setValue(DEFAULT_FRAGMENTS)
         self.theme_style.setCurrentIndex(max(self.theme_style.findData(DEFAULT_DARK), 0))
@@ -491,9 +555,14 @@ class SettingsDialog(QDialog):
         self.settings.setValue("channel", self.channel.text().strip())
         self.settings.setValue("output_root", os.path.normpath(output))
         self.settings.setValue("group_downloads", self.group_downloads.isChecked())
-        self.settings.setValue(
-            "filename_template", resolve_filename_template(self.filename.text())
+        preset = self.filename_preset.currentData() or DEFAULT_FILENAME_PRESET
+        template = (
+            resolve_filename_template(self.filename.text())
+            if preset == "custom"
+            else filename_template_for_preset(preset) or OUTPUT_TEMPLATE
         )
+        self.settings.setValue("filename_template", template)
+        self.settings.setValue("filename_preset", preset)
         self.settings.setValue("workers", self.workers.value())
         self.settings.setValue("fragments", self.fragments.value())
         self.settings.setValue("dark", bool(self.theme_style.currentData()))

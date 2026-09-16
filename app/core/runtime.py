@@ -1,6 +1,7 @@
 """Cross-platform runtime setup for yt-dlp and FFmpeg."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,10 +11,29 @@ import time
 APP_NAME = "CamDot"
 APP_FOLDER_NAME = APP_NAME
 APP_SLUG = "camdot"
+_QT_LOG_RULES = (
+    "qt.multimedia.ffmpeg*=false",
+    "qt.text.font.db*=false",
+    "qt.qpa.fonts.warning=false",
+)
 SETTINGS_ORG = APP_NAME
 GITHUB_REPO = "VOK-KH/CamDot"
 UPDATE_INTERVAL = 24 * 60 * 60
 UPDATE_PACKAGES = ("yt-dlp[default,curl-cffi]", "imageio-ffmpeg")
+
+
+def quiet_qt_logs():
+    """Keep Qt multimedia/font chatter off the terminal in normal GUI use."""
+    joined = ";".join(_QT_LOG_RULES)
+    current = os.environ.get("QT_LOGGING_RULES", "").strip()
+    if joined not in current:
+        os.environ["QT_LOGGING_RULES"] = f"{current};{joined}" if current else joined
+    try:
+        from PySide6.QtCore import QLoggingCategory
+
+        QLoggingCategory.setFilterRules("\n".join(_QT_LOG_RULES))
+    except ImportError:
+        pass
 
 
 def yt_dlp_command_prefix():
@@ -122,6 +142,16 @@ def channel_state_dir(channel):
     return os.path.join(state_dir(), "channels", channel)
 
 
+def download_artifacts_dir(channel, item_id=""):
+    """Sidecar metadata for a channel (optionally one reel/post id)."""
+    base = os.path.join(channel_state_dir(channel), "artifacts")
+    if item_id:
+        safe = re.sub(r'[\\/:*?"<>|]+', "_", str(item_id)).strip(" .")[:80]
+        if safe:
+            base = os.path.join(base, safe)
+    return base
+
+
 def util_cache_dir():
     """Favicon and other small caches under AppData."""
     return os.path.join(state_dir(), "cache")
@@ -186,6 +216,62 @@ def _relocate(src, dest):
             _merge_tree(src, dest)
 
 
+def _unique_dest(dest):
+    """Avoid overwriting an existing artifact file."""
+    if not os.path.exists(dest):
+        return dest
+    base, ext = os.path.splitext(dest)
+    for index in range(1, 1000):
+        candidate = f"{base}-{index}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+    return dest
+
+
+def _is_sidecar_name(name):
+    lowered = name.lower()
+    if lowered.endswith(".info.json"):
+        return True
+    return lowered.endswith((
+        ".description", ".image", ".nfo", ".xml", ".ytdl",
+        ".jpg", ".jpeg", ".png", ".webp",
+        ".m4a", ".mp3", ".opus", ".ogg", ".flac",
+        ".txt", ".json", ".srt", ".vtt",
+    ))
+
+
+def _sweep_sidecars_in_dir(folder, channel):
+    """Move leftover sidecar files from one folder into AppData artifacts."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    has_video = any(
+        os.path.isfile(os.path.join(folder, name))
+        and os.path.splitext(name)[1].lower() in {".mp4", ".webm", ".mkv", ".mov"}
+        for name in names
+    )
+    dest_root = download_artifacts_dir(channel)
+    for name in names:
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext in {".part", ".ytdl"}:
+            continue
+        if ext in {".mp4", ".webm", ".mkv", ".mov"}:
+            continue
+        if not _is_sidecar_name(name):
+            continue
+        if not has_video and ext in {".m4a", ".mp3", ".opus", ".ogg", ".flac"}:
+            continue
+        os.makedirs(dest_root, exist_ok=True)
+        try:
+            shutil.move(path, _unique_dest(os.path.join(dest_root, name)))
+        except OSError:
+            continue
+
+
 def sweep_download_folder(output_root):
     """Move leftover util files out of the user download folder into AppData.
 
@@ -223,6 +309,15 @@ def sweep_download_folder(output_root):
                     shutil.move(leftover, dest)
                 except OSError:
                     pass
+        _sweep_sidecars_in_dir(src, name)
+        try:
+            subnames = os.listdir(src)
+        except OSError:
+            continue
+        for sub in subnames:
+            subpath = os.path.join(src, sub)
+            if os.path.isdir(subpath):
+                _sweep_sidecars_in_dir(subpath, name)
 
 
 def _state_path():

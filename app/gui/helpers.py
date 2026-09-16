@@ -44,6 +44,6 @@ def derive_channel(source, preferred=""):
             else:
                 raw = head.lstrip("@")
         else:
-            raw = "downloads"
+            raw = "default"
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip(".-")
-    return safe or "downloads"
+    return safe or "default"

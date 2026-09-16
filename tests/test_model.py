@@ -22,6 +22,7 @@ from app.core.model import (
     COL_STATUS,
     COL_TITLE,
     COL_URL,
+    COL_VARIANT,
     PERCENT_ROLE,
     SORT_ROLE,
     Reel,
@@ -31,7 +32,9 @@ from app.core.model import (
     format_bytes,
     format_eta,
     media_kind,
+    media_output_files,
     output_folder,
+    row_title,
     variant_label,
 )
 
@@ -146,6 +149,29 @@ class Model(unittest.TestCase):
         self.assertEqual(counts["done"], 1)
         self.assertEqual(counts["queued"], 2)
 
+    def test_apply_event_syncs_active_variant_rows(self):
+        rows = extract_package_rows(
+            {"url": URLS[0], "title": "Clip", "media_kinds": {"video"}},
+            kinds={"video", "music", "image"},
+            folder_group=True,
+        )
+        self.model.set_urls([])
+        self.model.add_entries(rows)
+        self.model.apply_event(URLS[0], {
+            "status": "downloading", "percent": 55.0, "total": 1000,
+        })
+        self.assertEqual(self.model.reel_at(0).percent, 55.0)
+        self.assertEqual(self.model.reel_at(1).percent, 55.0)
+        self.assertEqual(self.model.reel_at(2).percent, 0.0)
+        self.assertEqual(self.model.reel_at(3).percent, 0.0)
+        self.assertEqual(
+            self.model.data(self.model.index(0, COL_PROGRESS), PERCENT_ROLE),
+            55.0,
+        )
+        self.model.apply_event(URLS[0], {"status": "done"})
+        self.assertEqual(self.model.reel_at(1).percent, 100.0)
+        self.assertEqual(self.model.reel_at(2).percent, 0.0)
+
     def test_unknown_url_is_ignored(self):
         self.assertFalse(self.model.apply_event("https://example.com/reel/9", {"status": "done"}))
 
@@ -243,6 +269,7 @@ class Model(unittest.TestCase):
         horizontal = Qt.Orientation.Horizontal
         role = Qt.ItemDataRole.DisplayRole
         self.assertEqual(self.model.headerData(COL_TITLE, horizontal, role), "Name")
+        self.assertEqual(self.model.headerData(COL_VARIANT, horizontal, role), "Variant")
         self.assertEqual(self.model.headerData(COL_HOST, horizontal, role), "Hoster")
         self.assertEqual(self.model.headerData(COL_FILE, horizontal, role), "Save to")
         self.assertEqual(self.model.headerData(COL_URL, horizontal, role), "Download from")
@@ -312,8 +339,29 @@ class Model(unittest.TestCase):
         self.assertEqual(self.model.reel_at(0).save_dir, r"H:\Media\Pins")
         self.assertEqual(self.model.reel_at(0).as_entry()["save_dir"], r"H:\Media\Pins")
 
+    def test_extract_package_rows_single_kind_is_flat(self):
+        rows = extract_package_rows({"url": URLS[0], "title": "Clip"}, kinds={"video"})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("variant"), "")
+        self.assertEqual(rows[0].get("media_kinds"), "video")
+
+    def test_extract_package_rows_folder_group_builds_tree(self):
+        rows = extract_package_rows(
+            {"url": URLS[0], "title": "Clip"},
+            kinds={"video", "music"},
+            folder_group=True,
+        )
+        self.assertEqual(
+            [row.get("variant") for row in rows],
+            ["", "video", "music"],
+        )
+
     def test_extract_package_rows_add_video_audio_and_image(self):
-        rows = extract_package_rows({"url": URLS[0], "title": "4K HDR"})
+        rows = extract_package_rows(
+            {"url": URLS[0], "title": "4K HDR"},
+            kinds={"video", "music", "image", "document"},
+            folder_group=True,
+        )
         self.assertEqual(
             [row.get("variant") for row in rows],
             ["", "video", "music", "image", "document"],
@@ -325,25 +373,105 @@ class Model(unittest.TestCase):
         rows = extract_package_rows(
             {"url": URLS[0], "save_dir": r"H:\Downloads"},
             kind_folders={"video": video_dir},
+            folder_group=True,
         )
         self.assertEqual(rows[0]["save_dir"], r"H:\Downloads")
         self.assertEqual(rows[1]["save_dir"], video_dir)
+
+    def test_extract_package_rows_single_kind_folder_group_builds_tree(self):
+        rows = extract_package_rows(
+            {"url": URLS[0], "title": "Clip"},
+            kinds={"video"},
+            folder_group=True,
+        )
+        self.assertEqual([row.get("variant") for row in rows], ["", "video"])
+
+    def test_attach_output_files_folder_group_keeps_tree(self):
+        folder = r"H:\Downloads\Caption"
+        video = os.path.join(folder, "clip.mp4")
+        self.model.set_urls([{"url": URLS[0], "title": "Clip", "save_dir": folder}])
+        self.model.attach_output_files(URLS[0], folder, [video], folder_group=True)
+        self.assertEqual(self.model.rowCount(), 2)
+        self.assertEqual(self.model.reel_at(0).filepath, "")
+        self.assertEqual(self._display(0, COL_FILE), folder)
+        self.assertEqual(self.model.reel_at(1).filepath, video)
+
+    def test_attach_output_files_flat_lists_files_at_root(self):
+        folder = r"H:\Downloads"
+        video = os.path.join(folder, "clip.mp4")
+        audio = os.path.join(folder, "clip.m4a")
+        self.model.set_urls([{"url": URLS[0], "title": "Clip", "save_dir": folder}])
+        self.model.attach_output_files(
+            URLS[0], folder, [video, audio], folder_group=False,
+        )
+        self.assertEqual(self.model.rowCount(), 2)
+        self.assertEqual(self.model.reel_at(0).variant, "video")
+        self.assertEqual(self.model.reel_at(0).filepath, video)
+        self.assertEqual(self.model.reel_at(1).variant, "music")
+        self.assertEqual(self.model.reel_at(1).filepath, audio)
+
+    def test_reshape_folder_layout_toggles_tree(self):
+        folder = r"H:\Downloads\Caption"
+        video = os.path.join(folder, "clip.mp4")
+        audio = os.path.join(folder, "clip.m4a")
+        self.model.set_urls([{"url": URLS[0], "title": "Clip", "save_dir": folder}])
+        self.model.attach_output_files(
+            URLS[0], folder, [video, audio], folder_group=True,
+        )
+        self.assertEqual(self.model.rowCount(), 3)
+        self.model.reshape_folder_layout(False)
+        self.assertEqual(self.model.rowCount(), 2)
+        self.assertEqual(self.model.reel_at(0).filepath, video)
+        self.model.reshape_folder_layout(True)
+        self.assertEqual(self.model.rowCount(), 3)
+        self.assertEqual(self._display(0, COL_FILE), folder)
+
+    def test_attach_single_output_flattens_to_one_row(self):
+        folder = r"H:\Downloads"
+        video = os.path.join(folder, "clip.mp4")
+        self.model.set_urls([{"url": URLS[0], "title": "Clip", "save_dir": folder}])
+        self.model.attach_output_files(URLS[0], folder, [video])
+        self.assertEqual(self.model.rowCount(), 1)
+        self.assertEqual(self.model.reel_at(0).filepath, video)
+        self.assertEqual(self._display(0, COL_FILE), video)
+
+    def test_attach_ignores_sidecar_when_one_media_file(self):
+        folder = r"H:\Downloads"
+        video = os.path.join(folder, "clip [111].mp4")
+        thumb = os.path.join(folder, "clip [111].jpg")
+        self.model.set_urls([{"url": URLS[0], "title": "default", "save_dir": folder}])
+        self.model.attach_output_files(URLS[0], folder, [video, thumb])
+        self.assertEqual(self.model.rowCount(), 1)
+        self.assertEqual(self.model.reel_at(0).filepath, video)
+
+    def test_row_title_skips_placeholder_default(self):
+        reel = Reel(
+            URLS[0],
+            title="default",
+            description="",
+            filepath=r"H:\Downloads\Caption [111].mp4",
+        )
+        self.assertIn("Caption", row_title(reel))
+        self.assertNotEqual(row_title(reel), "default")
 
     def test_tree_rows_share_the_save_folder_and_show_files(self):
         folder = r"H:\Downloads"
         self.model.set_urls([])
         self.model.add_entries(extract_package_rows({
             "url": URLS[0], "title": "Clip", "save_dir": folder,
-        }))
+        }, kinds={"video", "music", "image"}, folder_group=True))
         self.assertEqual(self._display(0, COL_FILE), folder)
         self.assertEqual(self._display(1, COL_FILE), folder)
         video = os.path.join(folder, "clip.mp4")
         audio = os.path.join(folder, "clip.m4a")
         image = os.path.join(folder, "clip.jpg")
-        self.model.attach_output_files(URLS[0], folder, [video, audio, image], expand=True)
+        self.model.attach_output_files(
+            URLS[0], folder, [video, audio, image], expand=True, folder_group=True,
+        )
         self.assertEqual(self.model.reel_at(0).filepath, "")
         self.assertEqual(self._display(0, COL_FILE), folder)
         self.assertEqual(self._display(1, COL_TITLE).strip(), "clip.mp4")
+        self.assertEqual(self._display(1, COL_VARIANT), "Video")
         self.assertEqual(self._display(1, COL_FILE), video)
         self.assertEqual(self._display(2, COL_FILE), audio)
         self.assertEqual(self._display(3, COL_FILE), image)

@@ -13,14 +13,14 @@ from app.core.download import post_label, reel_id
 from app.core.urls import detect_platform
 
 COLUMNS = (
-    "#", "", "", "Name", "Hoster", "Status", "Progress", "Uploader", "ID", "Size",
-    "Duration", "Speed", "ETA", "Save to", "Download from", "Added",
+    "#", "", "", "Name", "Variant", "Hoster", "Status", "Progress", "Uploader", "ID",
+    "Size", "Duration", "Speed", "ETA", "Save to", "Download from", "Added",
 )
 (
-    COL_INDEX, COL_CHECK, COL_ICON, COL_TITLE, COL_HOST, COL_STATUS, COL_PROGRESS,
-    COL_UPLOADER, COL_ID, COL_SIZE, COL_DURATION, COL_SPEED, COL_ETA, COL_FILE,
-    COL_URL, COL_ADDED,
-) = range(16)
+    COL_INDEX, COL_CHECK, COL_ICON, COL_TITLE, COL_VARIANT, COL_HOST, COL_STATUS,
+    COL_PROGRESS, COL_UPLOADER, COL_ID, COL_SIZE, COL_DURATION, COL_SPEED, COL_ETA,
+    COL_FILE, COL_URL, COL_ADDED,
+) = range(17)
 
 STATUSES = ("queued", "downloading", "done", "failed", "cancelled")
 STATUS_LABELS = {
@@ -47,6 +47,7 @@ STATUS_COLORS_DARK = {
 
 PERCENT_ROLE = Qt.ItemDataRole.UserRole
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
+VARIANT_OPTIONS_ROLE = Qt.ItemDataRole.UserRole + 2
 
 # (key, menu label, what the search box asks for) for the bottom bar filter.
 FILTER_FIELDS = (
@@ -215,15 +216,64 @@ def output_file_kind(path):
     return ""
 
 
-def save_to_text(reel, as_folder=False):
+def media_output_files(paths):
+    """Finished media paths only — skip sidecars and stray thumbnails."""
+    return [path for path in (paths or []) if path and output_file_kind(path)]
+
+
+def primary_output_files(files, media_kinds=None):
+    """Files that should drive the row layout (one video, not video+thumb)."""
+    media_paths = media_output_files(files)
+    videos = [path for path in media_paths if output_file_kind(path) == "video"]
+    if len(videos) == 1:
+        extras = [path for path in media_paths if path not in videos]
+        if not extras or all(output_file_kind(path) == "image" for path in extras):
+            return videos
+    kinds = set(media_kinds or [])
+    if len(kinds) == 1:
+        kind = next(iter(kinds))
+        picked = [path for path in media_paths if output_file_kind(path) == kind]
+        if len(picked) == 1:
+            return picked
+    return media_paths
+
+
+_PLACEHOLDER_TITLES = frozenset({"", "default", "video", "untitled", "na", "none"})
+
+
+def row_title(reel):
+    """Name column: caption/title, else file stem, else id."""
+    if reel.variant:
+        if reel.filepath:
+            return os.path.basename(reel.filepath)
+        return post_label(reel.title, reel.description, reel.rid) or variant_label(reel)
+    label = post_label(reel.title, reel.description, reel.rid)
+    if (label or "").lower().strip() in _PLACEHOLDER_TITLES:
+        if reel.filepath:
+            return os.path.splitext(os.path.basename(reel.filepath))[0]
+        return reel.rid or "-"
+    return label or "-"
+
+
+def package_has_children(reels, url):
+    """True when a link has variant/file rows under its package."""
+    return any(reel.url == url and reel.variant for reel in reels)
+
+
+def save_to_text(reel, as_folder=False, reels=None):
     """Package rows show the folder; file rows show a file in that same folder."""
     folder = output_folder(reel)
+    peers = reels if reels is not None else []
+    has_children = (
+        as_folder
+        or (peers and not reel.variant and package_has_children(peers, reel.url))
+    )
     if getattr(reel, "variant", ""):
         if reel.filepath:
             name = os.path.basename(reel.filepath)
             return os.path.join(folder, name) if folder else reel.filepath
         return folder or "-"
-    if as_folder:
+    if has_children:
         return folder or "-"
     if reel.filepath:
         return reel.filepath
@@ -252,13 +302,30 @@ def variant_label(reel):
     return ""
 
 
-def extract_package_rows(entry, kinds=None, kind_folders=None):
-    """One package row plus Video / Audio / Image / Document children."""
+def extract_package_rows(entry, kinds=None, kind_folders=None, folder_group=False):
+    """Flat row per link, or a package folder with Video / Audio / Image children."""
     data = dict(entry) if isinstance(entry, dict) else {"url": entry}
     if data.get("variant"):
         return [data]
     kinds = tuple(kinds) if kinds else tuple(key for key, _label in MEDIA_KINDS)
     folders = kind_folders or {}
+    has_kind_folders = any(str(folders.get(key) or "").strip() for key in kinds)
+    if not folder_group:
+        row = dict(data)
+        row["variant"] = ""
+        row["media_kinds"] = kinds[0] if len(kinds) == 1 else set(kinds)
+        return [row]
+    if len(kinds) == 1 and not has_kind_folders:
+        row = dict(data)
+        row["variant"] = ""
+        row["media_kinds"] = kinds[0]
+        package = dict(data)
+        package["variant"] = ""
+        child = dict(data)
+        child["variant"] = kinds[0]
+        if kinds[0] == "image":
+            child["image_quality"] = child.get("image_quality") or "best"
+        return [package, child]
     package = dict(data)
     package["variant"] = ""
     rows = [package]
@@ -401,13 +468,9 @@ class ReelModel(QAbstractTableModel):
             if column == COL_ID:
                 return reel.rid
             if column == COL_TITLE:
-                if reel.variant:
-                    name = os.path.basename(reel.filepath) if reel.filepath else variant_label(reel)
-                    return f"    {name}"
-                title = post_label(reel.title, reel.description, "") or "-"
-                if any(other.url == reel.url and other.variant for other in self._reels):
-                    return f"{'▼' if reel.expanded else '▶'}  {title}"
-                return title
+                return row_title(reel)
+            if column == COL_VARIANT:
+                return variant_label(reel) if reel.variant else ""
             if column == COL_UPLOADER:
                 return reel.uploader or "-"
             if column == COL_SIZE:
@@ -419,10 +482,7 @@ class ReelModel(QAbstractTableModel):
             if column == COL_ETA:
                 return format_eta(reel.eta) if reel.status == "downloading" else "-"
             if column == COL_FILE:
-                has_children = (not reel.variant and any(
-                    other.url == reel.url and other.variant for other in self._reels
-                ))
-                return save_to_text(reel, as_folder=has_children)
+                return save_to_text(reel, reels=self._reels)
             if column == COL_URL:
                 return reel.url
             if column == COL_ADDED:
@@ -430,15 +490,15 @@ class ReelModel(QAbstractTableModel):
             return None
 
         if role == PERCENT_ROLE and column == COL_PROGRESS:
-            return reel.percent
+            return self._display_percent(reel)
+        if role == VARIANT_OPTIONS_ROLE and column == COL_VARIANT and reel.variant == "image":
+            return [label for _key, label in IMAGE_QUALITIES]
         if role == Qt.ItemDataRole.DecorationRole and column == COL_ICON:
             if reel.variant in _KIND_ICONS:
                 return icons.icon(
                     _KIND_ICONS[reel.variant], KIND_ICON_COLORS[reel.variant], 16,
                 )
-            if not reel.variant and any(
-                other.url == reel.url and other.variant for other in self._reels
-            ):
+            if not reel.variant and package_has_children(self._reels, reel.url):
                 return icons.icon("folder", KIND_ICON_COLORS["folder"], 16)
             return None
         if role == Qt.ItemDataRole.DecorationRole and column == COL_HOST:
@@ -465,8 +525,10 @@ class ReelModel(QAbstractTableModel):
                 return index.row()
             if column == COL_STATUS:
                 return STATUSES.index(reel.status)
+            if column == COL_VARIANT:
+                return _VARIANT_ORDER.get(reel.variant or "", 9)
             if column == COL_PROGRESS:
-                return reel.percent
+                return self._display_percent(reel)
             if column == COL_SIZE:
                 return reel.total or 0
             if column == COL_DURATION:
@@ -643,6 +705,45 @@ class ReelModel(QAbstractTableModel):
             return None
         return self._reels[row]
 
+    def _rows_for_url(self, url):
+        return [index for index, reel in enumerate(self._reels) if reel.url == url]
+
+    def _active_variants(self, url):
+        """Kinds included in the download job, or None when every child row counts."""
+        pkg = self.package_reel(url)
+        if pkg is None:
+            return None
+        kinds = set(pkg.media_kinds or ())
+        return kinds if kinds else None
+
+    def _variant_rows(self, url, active_only=False):
+        rows = [reel for reel in self._reels if reel.url == url and reel.variant]
+        if not active_only:
+            return rows
+        active = self._active_variants(url)
+        if active is None:
+            return rows
+        return [reel for reel in rows if reel.variant in active]
+
+    def _event_applies_to_reel(self, reel, url):
+        if not reel.variant:
+            return True
+        active = self._active_variants(url)
+        return active is None or reel.variant in active
+
+    def _display_percent(self, reel):
+        """Package rows roll up progress from their active variant children."""
+        if reel.variant or not package_has_children(self._reels, reel.url):
+            return reel.percent
+        children = self._variant_rows(reel.url, active_only=True)
+        if not children:
+            return reel.percent
+        if all(child.status == "done" for child in children):
+            return 100.0
+        if any(child.status == "downloading" for child in children):
+            return max(child.percent for child in children)
+        return max(child.percent for child in children)
+
     def entries(self):
         return [reel.as_entry() for reel in self._reels]
 
@@ -804,28 +905,23 @@ class ReelModel(QAbstractTableModel):
         )
         return self._counts["downloading"], speed
 
-    def apply_event(self, url, event):
-        """Fold one progress event into its row. Returns False for unknown URLs."""
-        row = self._row_by_url.get(url)
-        if row is None:
-            return False
-        reel = self._reels[row]
+    def _apply_event_to_reel(self, reel, event):
         status = event.get("status")
-
         if status and status != reel.status:
             self._counts[reel.status] -= 1
             self._counts[status] += 1
             reel.status = status
 
-        for field in ("title", "description", "uploader", "filepath", "platform",
-                      "extractor_key", "webpage_url_domain"):
-            value = event.get(field)
-            if value:
-                setattr(reel, field, value)
-        if event.get("id"):
-            reel.rid = event["id"]
-        if event.get("duration") is not None:
-            reel.duration = event["duration"]
+        if not reel.variant:
+            for field in ("title", "description", "uploader", "filepath", "platform",
+                          "extractor_key", "webpage_url_domain"):
+                value = event.get(field)
+                if value:
+                    setattr(reel, field, value)
+            if event.get("id"):
+                reel.rid = event["id"]
+            if event.get("duration") is not None:
+                reel.duration = event["duration"]
 
         if status == "done":
             reel.percent = 100.0
@@ -834,66 +930,234 @@ class ReelModel(QAbstractTableModel):
         elif status == "downloading":
             if event.get("percent") is not None:
                 reel.percent = event["percent"]
-            if event.get("total") is not None:
+            if event.get("total") is not None and not reel.variant:
                 reel.total = event["total"]
             reel.speed = event.get("speed")
             reel.eta = event.get("eta")
         elif status:
             reel.speed = None
             reel.eta = None
-
-        self.dataChanged.emit(self.index(row, 0), self.index(row, len(COLUMNS) - 1))
         return True
 
-    def attach_output_files(self, url, folder, files, expand=False):
-        """Point package/file rows at the real save folder and files in it."""
-        row = self._row_by_url.get(url)
-        if row is None:
+    def apply_event(self, url, event):
+        """Fold one progress event into the package and its active variant rows."""
+        rows = self._rows_for_url(url)
+        if not rows:
             return False
-        pkg = self._reels[row]
-        folder = folder or output_folder(pkg)
-        if folder:
-            pkg.save_dir = folder
-        by_kind = {}
-        for path in files or []:
-            kind = output_file_kind(path)
-            if kind and kind not in by_kind:
-                by_kind[kind] = path
-        extras = []
-        have = {
-            reel.variant for reel in self._reels
-            if reel.url == url and reel.variant
+        changed = []
+        for row in rows:
+            reel = self._reels[row]
+            if not self._event_applies_to_reel(reel, url):
+                continue
+            self._apply_event_to_reel(reel, event)
+            changed.append(row)
+        if not changed:
+            return False
+        self.dataChanged.emit(
+            self.index(changed[0], 0),
+            self.index(changed[-1], len(COLUMNS) - 1),
+        )
+        return True
+
+    def _package_snapshot(self, url):
+        rows = [reel for reel in self._reels if reel.url == url]
+        if not rows:
+            return None
+        variants = {reel.variant: reel for reel in rows if reel.variant}
+        pkg = next((reel for reel in rows if not reel.variant), None)
+        if pkg is None:
+            base = rows[0]
+            pkg = Reel(
+                base.url,
+                id=base.rid,
+                title=base.title,
+                description=base.description,
+                uploader=base.uploader,
+                save_dir=base.save_dir,
+                platform=base.platform,
+                extractor_key=base.extractor_key,
+                webpage_url_domain=base.webpage_url_domain,
+                comment=base.comment,
+                added_at=base.added_at,
+                status=base.status,
+                percent=base.percent,
+                total=base.total,
+                speed=base.speed,
+                eta=base.eta,
+            )
+            if base.media_kinds:
+                pkg.media_kinds = set(base.media_kinds)
+        files = {}
+        for kind, reel in variants.items():
+            if reel.filepath:
+                files[kind] = reel.filepath
+        if pkg.filepath and not pkg.variant:
+            kind = output_file_kind(pkg.filepath) or "video"
+            files.setdefault(kind, pkg.filepath)
+        kinds = set(variants)
+        if pkg.media_kinds:
+            kinds.update(pkg.media_kinds)
+        kinds.update(files)
+        if not kinds:
+            kinds = {"video"}
+        return {
+            "url": url,
+            "pkg": pkg,
+            "variants": variants,
+            "files": files,
+            "kinds": kinds,
         }
-        for kind, path in by_kind.items():
-            if kind in have:
-                continue
-            extras.append({
-                "url": url,
-                "variant": kind,
-                "filepath": path,
-                "save_dir": folder,
-                "id": pkg.rid,
-                "title": pkg.title,
-                "status": pkg.status,
-            })
-        if extras:
-            self.add_entries(extras)
-        last = len(COLUMNS) - 1
-        for index, reel in enumerate(self._reels):
-            if reel.url != url:
-                continue
-            if reel.variant:
-                path = by_kind.get(reel.variant)
-                if path:
-                    reel.filepath = path
-                    reel.save_dir = folder or reel.save_dir
-            elif by_kind:
+
+    def _copy_reel_state(self, reel, source):
+        reel.status = source.status
+        reel.percent = source.percent
+        reel.total = source.total
+        reel.speed = source.speed
+        reel.eta = source.eta
+        reel.checked = source.checked
+        if source.comment:
+            reel.comment = source.comment
+        if source.added_at:
+            reel.added_at = source.added_at
+
+    def _rows_for_folder_layout(self, snap, folder_group, kind_folders=None):
+        pkg = snap["pkg"]
+        entry = pkg.as_entry()
+        files = snap["files"]
+        kinds = set(snap["kinds"])
+        kinds.update(files)
+        kind_folders = kind_folders or {}
+        ordered_kinds = sorted(kinds, key=lambda key: _VARIANT_ORDER.get(key, 9))
+
+        if folder_group:
+            rows_data = extract_package_rows(
+                entry,
+                kinds=tuple(ordered_kinds),
+                kind_folders=kind_folders,
+                folder_group=True,
+            )
+        elif len(files) > 1:
+            rows_data = []
+            for kind in ordered_kinds:
+                path = files.get(kind)
+                if not path:
+                    continue
+                row = dict(entry)
+                row["variant"] = kind
+                row["filepath"] = path
+                row["save_dir"] = os.path.dirname(path) or pkg.save_dir
+                rows_data.append(row)
+        elif len(files) == 1:
+            path = next(iter(files.values()))
+            row = dict(entry)
+            row["variant"] = ""
+            row["filepath"] = path
+            row["save_dir"] = os.path.dirname(path) or pkg.save_dir
+            rows_data = [row]
+        else:
+            rows_data = extract_package_rows(
+                entry,
+                kinds=tuple(ordered_kinds),
+                kind_folders=kind_folders,
+                folder_group=False,
+            )
+
+        old_rows = [snap["pkg"], *snap["variants"].values()]
+        old_by_key = {reel_key(reel.url, reel.variant): reel for reel in old_rows}
+        new_reels = []
+        for data in rows_data:
+            url = data.get("url", snap["url"])
+            variant = data.get("variant") or ""
+            meta = dict(data)
+            meta.pop("url", None)
+            media_kinds = meta.pop("media_kinds", None)
+            reel = Reel(url, **meta)
+            if media_kinds:
+                if isinstance(media_kinds, str):
+                    reel.media_kinds = {media_kinds}
+                else:
+                    reel.media_kinds = set(media_kinds)
+            source = old_by_key.get(reel_key(url, variant))
+            if source is None and variant:
+                source = snap["variants"].get(variant) or snap["pkg"]
+            elif source is None:
+                source = snap["pkg"]
+            self._copy_reel_state(reel, source)
+            if variant and files.get(variant):
+                reel.filepath = files[variant]
+                reel.save_dir = os.path.dirname(files[variant]) or reel.save_dir
+                if source.status == "done":
+                    reel.status = "done"
+                    reel.percent = 100.0
+                    reel.speed = None
+                    reel.eta = None
+            elif not variant and len(files) == 1 and not folder_group:
+                path = next(iter(files.values()))
+                reel.filepath = path
+                reel.save_dir = os.path.dirname(path) or reel.save_dir
+            elif folder_group and not variant:
                 reel.filepath = ""
-                reel.save_dir = folder or reel.save_dir
-                if expand:
+            new_reels.append(reel)
+        return new_reels
+
+    def reshape_folder_layout(self, folder_group, kind_folders=None):
+        """Rebuild rows so Save to and the tree match Views → Folder group."""
+        urls = []
+        seen = set()
+        for reel in self._reels:
+            if reel.url in seen:
+                continue
+            seen.add(reel.url)
+            urls.append(reel.url)
+        if not urls:
+            return False
+
+        new_reels = []
+        for url in urls:
+            snap = self._package_snapshot(url)
+            if snap is None:
+                continue
+            new_reels.extend(self._rows_for_folder_layout(snap, folder_group, kind_folders))
+
+        self.beginResetModel()
+        self._reels = new_reels
+        self._reindex()
+        self._counts = Counter(reel.status for reel in self._reels)
+        self.endResetModel()
+        return True
+
+    def attach_output_files(self, url, folder, files, expand=False, folder_group=False):
+        """Point package/file rows at the real save folder and files in it."""
+        snap = self._package_snapshot(url)
+        if snap is None:
+            return False
+        folder = folder or output_folder(snap["pkg"])
+        all_media = media_output_files(files)
+        if not all_media:
+            return False
+        layout_media = primary_output_files(files, snap["pkg"].media_kinds)
+        if len(layout_media) == 1:
+            all_media = layout_media
+        snap["files"] = {}
+        for path in all_media:
+            kind = output_file_kind(path)
+            if kind and kind not in snap["files"]:
+                snap["files"][kind] = path
+        if folder:
+            snap["pkg"].save_dir = folder
+        new_rows = self._rows_for_folder_layout(snap, folder_group, kind_folders=None)
+        if folder_group and expand:
+            for reel in new_rows:
+                if not reel.variant:
                     reel.expanded = True
-            self.dataChanged.emit(self.index(index, 0), self.index(index, last))
-        return bool(by_kind or extras)
+        first = next(index for index, reel in enumerate(self._reels) if reel.url == url)
+        last = max(index for index, reel in enumerate(self._reels) if reel.url == url)
+        self.beginResetModel()
+        self._reels = self._reels[:first] + new_rows + self._reels[last + 1:]
+        self._reindex()
+        self._counts = Counter(reel.status for reel in self._reels)
+        self.endResetModel()
+        return True
 
 
 class ReelFilterProxy(QSortFilterProxyModel):
@@ -907,6 +1171,7 @@ class ReelFilterProxy(QSortFilterProxyModel):
         self._field = "all"
         self._kinds = set(_ALL_KINDS)
         self._hosts = None
+        self._tree_mode = False
 
     def set_status(self, status):
         self._status = status
@@ -928,6 +1193,10 @@ class ReelFilterProxy(QSortFilterProxyModel):
         self._hosts = set(hosts) if hosts is not None else None
         self.invalidate()
 
+    def set_tree_mode(self, enabled):
+        self._tree_mode = bool(enabled)
+        self.invalidate()
+
     def _haystack(self, reel):
         """The text the filter searches, narrowed to the chosen field."""
         if self._field == "title":
@@ -944,23 +1213,32 @@ class ReelFilterProxy(QSortFilterProxyModel):
             (reel.url, reel.rid, reel.title, reel.description, reel.uploader, reel.platform)
         )
 
+    def _reel_matches(self, reel):
+        if self._status and reel.status != self._status:
+            return False
+        if media_kind(reel) not in self._kinds:
+            return False
+        if self._hosts is not None and host_label(reel) not in self._hosts:
+            return False
+        if self._text and self._text not in self._haystack(reel).lower():
+            return False
+        return True
+
     def filterAcceptsRow(self, row, parent):
         model = self.sourceModel()
         if model is None:
             return True
         reel = model.reel_at(row)
-        if self._status and reel.status != self._status:
+        if not reel.variant and self._tree_mode:
+            for other in model._reels:
+                if other.url == reel.url and other.variant and self._reel_matches(other):
+                    return True
+        if not self._reel_matches(reel):
             return False
-        if media_kind(reel) not in self._kinds:
-            return False
-        if reel.variant:
+        if reel.variant and not self._tree_mode:
             pkg = model.package_reel(reel.url)
             if pkg is not None and not pkg.variant and not pkg.expanded:
                 return False
-        if self._hosts is not None and host_label(reel) not in self._hosts:
-            return False
-        if self._text and self._text not in self._haystack(reel).lower():
-            return False
         return True
 
     def lessThan(self, left, right):

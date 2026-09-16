@@ -15,6 +15,7 @@ from app.core.runtime import (
     resolve_ffmpeg,
     resolve_output_root,
     runtime_versions,
+    download_artifacts_dir,
     sweep_download_folder,
     update_runtime,
     util_cache_dir,
@@ -135,6 +136,29 @@ class RuntimeTools(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(state, "channels", "jireel", ".downloaded.txt")))
             self.assertTrue(os.path.isfile(video))
             self.assertTrue(os.path.isfile(part))
+
+    def test_sweep_moves_sidecars_into_app_data(self):
+        with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as state:
+            channel = os.path.join(downloads, "jireel")
+            os.makedirs(channel)
+            video = os.path.join(channel, "clip [abc].mp4")
+            sidecar = os.path.join(channel, "clip [abc].info.json")
+            with open(video, "wb") as f:
+                f.write(b"v")
+            with open(sidecar, "w", encoding="utf-8") as f:
+                f.write("{}")
+            with patch("app.core.runtime.state_dir", return_value=state):
+                sweep_download_folder(downloads)
+                self.assertTrue(os.path.isfile(video))
+                self.assertFalse(os.path.isfile(sidecar))
+                artifact_root = download_artifacts_dir("jireel")
+                self.assertEqual(
+                    artifact_root,
+                    os.path.join(state, "channels", "jireel", "artifacts"),
+                )
+                self.assertTrue(os.path.isfile(
+                    os.path.join(artifact_root, "clip [abc].info.json")
+                ))
 
 
 if __name__ == "__main__":

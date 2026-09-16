@@ -82,7 +82,10 @@ def main():
         return 0
 
     if not args or args[0] in ("--gui", "-g"):
+        from app.core.runtime import quiet_qt_logs
         from app.gui import run_gui
+
+        quiet_qt_logs()
         return run_gui()
 
     if args[0] in ("--cli",):

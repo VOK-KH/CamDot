@@ -22,6 +22,7 @@ from app.core.jobs import StopRequested, check_stop
 from app.core.runtime import (
     channel_state_dir,
     default_output_root,
+    download_artifacts_dir,
     resolve_ffmpeg,
     yt_dlp_command_prefix,
 )
@@ -52,10 +53,16 @@ _AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".flac"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 _DOCUMENT_EXTS = {".txt", ".json", ".srt", ".vtt", ".nfo", ".xml", ".description"}
 _STAGING_EXTS = {".part", ".ytdl"}
+_SIDECAR_NAMES = (".description", ".image", ".nfo", ".xml", ".ytdl")
 
-# Caption first, then the Facebook title, then the reel id. The id stays in
-# brackets so a long caption can never collide with another file.
-OUTPUT_TEMPLATE = "%(description,title,id).80B [%(id)s].%(ext)s"
+# Built-in file name patterns (Settings → Download). Preset 2 is the default.
+FILENAME_PRESETS = (
+    ("title_id", "Title + ID", "%(title)s [%(id)s].%(ext)s"),
+    ("caption", "Caption or title", "%(description,title,id).80B [%(id)s].%(ext)s"),
+    ("id", "ID only", "%(id)s.%(ext)s"),
+)
+DEFAULT_FILENAME_PRESET = "caption"
+OUTPUT_TEMPLATE = FILENAME_PRESETS[1][2]
 
 # Machine-readable progress, so the UI never has to parse yt-dlp's console output.
 PROGRESS_PREFIX = "@@P"
@@ -139,11 +146,20 @@ def source_folder_name(title="", description="", rid=""):
     return f"{token}-{suffix}" if suffix else token
 
 
+def _is_absolute_path(path):
+    """True for platform abs paths and Windows drive paths like ``D:\\pins``."""
+    if os.path.isabs(path):
+        return True
+    if len(path) >= 2 and path[1] == ":" and path[0].isalpha():
+        return True
+    return False
+
+
 def resolve_item_dir(output_dir, source_folder=""):
     """Join a relative caption folder, or keep an absolute Set-download-directory path."""
     if not source_folder:
         return output_dir
-    if os.path.isabs(source_folder):
+    if _is_absolute_path(source_folder):
         return source_folder
     return os.path.join(output_dir, source_folder)
 
@@ -158,6 +174,88 @@ def _kind_for_ext(ext):
     if ext in _DOCUMENT_EXTS:
         return "document"
     return ""
+
+
+def _kind_for_name(name):
+    lowered = name.lower()
+    if lowered.endswith(".info.json"):
+        return "document"
+    return _kind_for_ext(os.path.splitext(name)[1].lower())
+
+
+def _is_system_sidecar(name):
+    lowered = name.lower()
+    if lowered.endswith(".info.json"):
+        return True
+    return lowered.endswith(_SIDECAR_NAMES)
+
+
+def _unique_artifact_path(dest):
+    if not os.path.exists(dest):
+        return dest
+    base, ext = os.path.splitext(dest)
+    for index in range(1, 1000):
+        candidate = f"{base}-{index}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+    return dest
+
+
+def _move_to_artifacts(path, channel, item_id=""):
+    if not channel:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    dest_dir = download_artifacts_dir(channel, item_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = _unique_artifact_path(os.path.join(dest_dir, os.path.basename(path)))
+    try:
+        os.replace(path, dest)
+    except OSError:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def relocate_sidecars(source_dir, media_kinds=None, channel="", item_id=""):
+    """Keep only requested media in the user folder; move the rest to AppData."""
+    if not source_dir or not os.path.isdir(source_dir):
+        return
+    kinds = normalize_media_kinds(media_kinds)
+    keep_video = "video" in kinds
+    keep_music = "music" in kinds
+    keep_image = "image" in kinds
+
+    for path in list(_iter_media_files(source_dir)):
+        name = os.path.basename(path)
+        ext = os.path.splitext(name)[1].lower()
+        if ext in _STAGING_EXTS:
+            continue
+        kind = _kind_for_name(name)
+        if _is_system_sidecar(name) or kind == "document":
+            _move_to_artifacts(path, channel, item_id)
+            continue
+        if kind == "video" and keep_video:
+            continue
+        if kind == "music":
+            if keep_music:
+                continue
+            _move_to_artifacts(path, channel, item_id)
+            continue
+        if kind == "image":
+            if keep_image:
+                continue
+            _move_to_artifacts(path, channel, item_id)
+            continue
+        if kind == "video":
+            if keep_video:
+                continue
+            _move_to_artifacts(path, channel, item_id)
+            continue
+        _move_to_artifacts(path, channel, item_id)
 
 
 _KIND_DIRS = {"video": "video", "music": "audio", "image": "image"}
@@ -349,6 +447,23 @@ def resolve_filename_template(template=""):
     """yt-dlp output name; empty falls back to caption, title, then id."""
     text = (template or "").strip()
     return text or OUTPUT_TEMPLATE
+
+
+def filename_preset_for_template(template=""):
+    """Map a saved template back to a preset key, or ``custom``."""
+    text = resolve_filename_template(template)
+    for key, _label, fmt in FILENAME_PRESETS:
+        if text == fmt:
+            return key
+    return "custom"
+
+
+def filename_template_for_preset(key):
+    """Return the yt-dlp template for a preset key, or '' when unknown."""
+    for preset_key, _label, fmt in FILENAME_PRESETS:
+        if preset_key == key:
+            return fmt
+    return ""
 
 
 def twitter_status_id(url):
@@ -743,9 +858,13 @@ def _yt_dlp_args(
             args.append("--keep-video")
     if want_image:
         args.extend(("--write-thumbnail", "--convert-thumbnails", "jpg"))
+    else:
+        args.append("--no-write-thumbnail")
     want_document = "document" in kinds
     if want_document:
         args.extend(("--write-description", "--write-info-json"))
+    else:
+        args.extend(("--no-write-description", "--no-write-info-json"))
     if (want_image or want_document) and not want_video and not want_music:
         args.append("--skip-download")
     args.append(url)
@@ -785,6 +904,7 @@ def _download_one(
     log, on_progress, should_stop, group, cookies_browser="",
     filename_template="", cookies_file="", dateafter="",
     limit_rate="", media_kinds=None, source_folder="", kind_folders=None,
+    channel="",
 ):
     check_stop(should_stop)
     kinds = normalize_media_kinds(media_kinds)
@@ -848,6 +968,7 @@ def _download_one(
                 media_kinds=kinds,
             ):
                 organize_media_into_kinds(dest_dir, kinds, kind_folders)
+                relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
                 relocated = relocate_artifacts(dest_dir, kinds)
                 if relocated:
                     on_progress(url, {"filepath": relocated[0]})
@@ -857,6 +978,7 @@ def _download_one(
             on_progress(url, {"status": "cancelled"})
             raise
     organize_media_into_kinds(dest_dir, kinds, kind_folders)
+    relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
     relocated = relocate_artifacts(dest_dir, kinds)
     if platform == "pinterest" and (code != 0 or not _has_downloaded_media(dest_dir)):
         try:
@@ -866,6 +988,7 @@ def _download_one(
                 media_kinds=kinds,
             ):
                 organize_media_into_kinds(dest_dir, kinds, kind_folders)
+                relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
                 relocated = relocate_artifacts(dest_dir, kinds)
                 if relocated:
                     on_progress(url, {"filepath": relocated[0]})
@@ -935,6 +1058,7 @@ def download_urls(
                 if url in folders
                 else (source_folder_name("", "", reel_id(url)) if group_by_source else ""),
                 kind_folders,
+                channel,
             ): url
             for url in urls
         }

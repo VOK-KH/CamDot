@@ -20,8 +20,8 @@ _FONT_CANDIDATES = {
         ("segoeui.ttf", "segoeuib.ttf", "arial.ttf", "calibri.ttf"),
     ),
     "darwin": (
-        lambda: "/System/Library/Fonts/Supplemental",
-        ("Arial.ttf", "Helvetica.ttc"),
+        lambda: "/System/Library/Fonts",
+        ("Helvetica.ttc", "Supplemental/Arial.ttf", "Supplemental/Helvetica.ttc"),
     ),
     "linux": (
         lambda: "/usr/share/fonts/truetype/dejavu",
@@ -66,12 +66,16 @@ def _register_font_files():
 
 def pick_ui_family():
     families = set(QFontDatabase.families())
-    for name in _PREFERRED:
+    preferred = _PREFERRED
+    if sys.platform == "darwin":
+        preferred = ("Helvetica Neue", "Helvetica", *preferred)
+    for name in preferred:
         if name in families:
             return name
-    if families:
-        return sorted(families)[0]
-    return "Sans Serif"
+    for name in sorted(families):
+        if not name.startswith("."):
+            return name
+    return "Helvetica" if sys.platform == "darwin" else "Sans Serif"
 
 
 def register_fonts():

@@ -73,6 +73,7 @@ class GrabberPanel(QFrame):
         self._slide = QPropertyAnimation(self, b"pos", self)
         self._slide.setDuration(SLIDE_MS)
         self._slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._slide_hide_connected = False
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
@@ -210,6 +211,19 @@ class GrabberPanel(QFrame):
         y = area.y() + area.height() - self.height() - FLOAT_MARGIN
         return QPoint(x, y)
 
+    def _disconnect_slide_hide(self):
+        if not self._slide_hide_connected:
+            return
+        try:
+            self._slide.finished.disconnect(self._hide_after_slide)
+        except (RuntimeError, TypeError):
+            pass
+        self._slide_hide_connected = False
+
+    def _hide_after_slide(self):
+        self._slide_hide_connected = False
+        self.hide()
+
     def dock_bottom_right(self, animate=False):
         if self.user_placed:
             return
@@ -218,16 +232,14 @@ class GrabberPanel(QFrame):
         if animate and self._can_animate():
             start = QPoint(dest.x(), dest.y() + self.height() + FLOAT_MARGIN)
             self._slide.stop()
-            try:
-                self._slide.finished.disconnect()
-            except (RuntimeError, TypeError):
-                pass
+            self._disconnect_slide_hide()
             self.move(start)
             self._slide.setStartValue(start)
             self._slide.setEndValue(dest)
             self._slide.start()
             return
         self._slide.stop()
+        self._disconnect_slide_hide()
         self.move(dest)
 
     def slide_hide(self):
@@ -240,11 +252,9 @@ class GrabberPanel(QFrame):
         start = self.pos()
         end = QPoint(start.x(), start.y() + self.height() + FLOAT_MARGIN)
         self._slide.stop()
-        try:
-            self._slide.finished.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-        self._slide.finished.connect(self.hide)
+        self._disconnect_slide_hide()
+        self._slide.finished.connect(self._hide_after_slide)
+        self._slide_hide_connected = True
         self._slide.setStartValue(start)
         self._slide.setEndValue(end)
         self._slide.start()

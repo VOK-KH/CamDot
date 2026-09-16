@@ -189,6 +189,18 @@ class TrayController(QObject):
             f"{self.window.windowTitle()} — grabber {grabber}{busy}"
         )
 
+    def notify(self, title, message, ms=5000):
+        """macOS Notification Center message (requires a visible tray icon)."""
+        if not self._can_show() or not self.icon.isVisible():
+            return False
+        self.icon.showMessage(
+            title,
+            message,
+            QSystemTrayIcon.MessageIcon.Information,
+            int(ms),
+        )
+        return True
+
     def sync_grabber(self):
         checked = self.window.act_grabber.isChecked()
         self.act_clipboard.blockSignals(True)

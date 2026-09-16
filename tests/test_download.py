@@ -8,7 +8,11 @@ from unittest.mock import patch
 from app.core.download import (
     ALL_MEDIA_KINDS,
     FORMAT_SELECTOR,
+    DEFAULT_FILENAME_PRESET,
+    FILENAME_PRESETS,
     OUTPUT_TEMPLATE,
+    filename_preset_for_template,
+    filename_template_for_preset,
     PINTEREST_FORMAT_SELECTOR,
     TWITTER_EXTRACTOR_ARGS,
     TWITTER_FORMAT_SELECTOR,
@@ -23,6 +27,7 @@ from app.core.download import (
     post_label,
     read_urls,
     relocate_artifacts,
+    relocate_sidecars,
     resolve_filename_template,
     resolve_item_dir,
     reel_id,
@@ -144,6 +149,19 @@ class YtDlpArgs(unittest.TestCase):
         self.assertIn(os.path.join("out", "%(id)s.%(ext)s"), args)
         self.assertEqual(resolve_filename_template(""), OUTPUT_TEMPLATE)
         self.assertEqual(resolve_filename_template("  "), OUTPUT_TEMPLATE)
+
+    def test_filename_presets_default_is_caption(self):
+        self.assertEqual(DEFAULT_FILENAME_PRESET, "caption")
+        self.assertEqual(OUTPUT_TEMPLATE, FILENAME_PRESETS[1][2])
+        self.assertEqual(
+            filename_preset_for_template(OUTPUT_TEMPLATE),
+            "caption",
+        )
+        self.assertEqual(
+            filename_template_for_preset("id"),
+            "%(id)s.%(ext)s",
+        )
+        self.assertEqual(filename_preset_for_template("%(uploader)s.%(ext)s"), "custom")
 
     def test_cookies_from_browser_are_passed(self):
         args = _yt_dlp_args(
@@ -400,6 +418,9 @@ class MediaKindArgs(unittest.TestCase):
         self.assertNotIn("--extract-audio", args)
         self.assertNotIn("--keep-video", args)
         self.assertNotIn("--write-thumbnail", args)
+        self.assertIn("--no-write-thumbnail", args)
+        self.assertIn("--no-write-info-json", args)
+        self.assertIn("--no-write-description", args)
         self.assertNotIn("--skip-download", args)
 
     def test_image_only_skips_media_download(self):
@@ -466,6 +487,32 @@ class OrganizeMedia(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(docs_dir, "clip.description")))
 
 
+class RelocateSidecars(unittest.TestCase):
+    def test_video_only_keeps_mp4_and_moves_sidecars(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as state:
+            layout = {
+                "clip [abc].mp4": b"v",
+                "clip [abc].info.json": b"{}",
+                "clip [abc].description": b"text",
+                "clip [abc].jpg": b"x",
+                "clip [abc].m4a": b"x",
+            }
+            for name, data in layout.items():
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(data)
+            with patch("app.core.runtime.state_dir", return_value=state):
+                relocate_sidecars(folder, {"video"}, "jireel", "abc")
+            self.assertTrue(os.path.isfile(os.path.join(folder, "clip [abc].mp4")))
+            self.assertFalse(os.path.isfile(os.path.join(folder, "clip [abc].info.json")))
+            artifact_root = os.path.join(state, "channels", "jireel", "artifacts", "abc")
+            self.assertTrue(os.path.isdir(artifact_root))
+            names = set(os.listdir(artifact_root))
+            self.assertIn("clip [abc].info.json", names)
+            self.assertIn("clip [abc].description", names)
+            self.assertIn("clip [abc].jpg", names)
+            self.assertIn("clip [abc].m4a", names)
+
+
 class RelocateArtifacts(unittest.TestCase):
     def test_finds_media_in_kind_subfolders(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -509,16 +556,17 @@ class DownloadKwargs(unittest.TestCase):
                         source_folders={url: "My Caption"},
                     )
         self.assertEqual(failures, 0)
-        self.assertEqual(captured["args"][-3], frozenset({"image"}))
-        self.assertEqual(captured["args"][-2], "My Caption")
-        self.assertIsNone(captured["args"][-1])
+        self.assertEqual(captured["args"][-4], frozenset({"image"}))
+        self.assertEqual(captured["args"][-3], "My Caption")
+        self.assertIsNone(captured["args"][-2])
+        self.assertEqual(captured["args"][-1], "jireel")
 
 
     def test_download_urls_skips_source_folder_when_grouping_disabled(self):
         captured = {}
 
         def fake_one(*args, **kwargs):
-            captured["source_folder"] = args[-2]
+            captured["source_folder"] = args[-3]
             return 0
 
         url = "https://www.facebook.com/reel/99"

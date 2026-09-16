@@ -1,5 +1,10 @@
 """Layout constants shared by the window, tables, and widgets."""
+import sys
+
 from PySide6.QtCore import Qt
+
+# Windows keeps the custom title strip; macOS/Linux use native window chrome.
+CUSTOM_WINDOW_CHROME = sys.platform == "win32"
 
 from app.core.model import (
     COL_ADDED,
@@ -18,13 +23,14 @@ from app.core.model import (
     COL_TITLE,
     COL_UPLOADER,
     COL_URL,
+    COL_VARIANT,
 )
 
 COLUMN_WIDTHS = {
-    COL_CHECK: 28, COL_ICON: 28, COL_HOST: 118, COL_INDEX: 42, COL_STATUS: 110,
-    COL_PROGRESS: 118, COL_TITLE: 280, COL_UPLOADER: 140, COL_ID: 120, COL_SIZE: 78,
-    COL_DURATION: 64, COL_SPEED: 84, COL_ETA: 52, COL_FILE: 220, COL_URL: 200,
-    COL_ADDED: 130,
+    COL_CHECK: 28, COL_ICON: 28, COL_HOST: 52, COL_INDEX: 42, COL_STATUS: 110,
+    COL_PROGRESS: 140, COL_TITLE: 280, COL_VARIANT: 150, COL_UPLOADER: 140, COL_ID: 120,
+    COL_SIZE: 78, COL_DURATION: 64, COL_SPEED: 84, COL_ETA: 52, COL_FILE: 220,
+    COL_URL: 200, COL_ADDED: 130,
 }
 FIXED_COLUMNS = (COL_CHECK, COL_INDEX, COL_ICON)
 PINNED_COLUMNS = (COL_INDEX, COL_CHECK, COL_ICON)

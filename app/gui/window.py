@@ -51,8 +51,8 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QSystemTrayIcon,
     QTabWidget,
-    QTableView,
     QToolButton,
+    QTreeView,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -67,6 +67,7 @@ from app.core.download import (
 )
 from app.gui.constants import (
     COLUMN_WIDTHS,
+    CUSTOM_WINDOW_CHROME,
     EDGE_CURSORS,
     FIXED_COLUMNS,
     FRAME_MARGIN,
@@ -88,12 +89,15 @@ from app.gui.widgets.loader import ExtractLoader
 from app.gui.widgets.views import ViewsPanel
 from app.gui.dialogs.settings import SettingsDialog
 from app.gui.helpers import derive_channel, remember_recent
+from app.gui.notifications import notify, use_grabber_notifications
 from app.gui.instance import InstanceGuard
 from app.gui.jobs import JobWorker
 from app.gui.widgets.header import CheckHeaderView
 from app.gui.widgets.overview import OverviewPanel
 from app.gui.widgets.properties import PropertiesPanel
+from app.gui.widgets.delegates import HosterDelegate, VariantDelegate
 from app.gui.widgets.progress import ProgressDelegate
+from app.gui.widgets.reel_tree import ReelTreeProxy
 from app.core.model import (
     COL_CHECK,
     COL_FILE,
@@ -103,6 +107,7 @@ from app.core.model import (
     COL_INDEX,
     COL_PROGRESS,
     COL_TITLE,
+    COL_VARIANT,
     COLUMNS,
     MEDIA_KINDS,
     STATUS_LABELS,
@@ -112,7 +117,9 @@ from app.core.model import (
     extract_package_rows,
     format_eta,
     IMAGE_QUALITIES,
+    media_output_files,
     output_folder,
+    primary_output_files,
 )
 from app import __version__
 from app.core.fonts import setup_app_font
@@ -120,6 +127,7 @@ from app.core.runtime import (
     APP_NAME,
     collect_csv_path,
     gui_settings,
+    quiet_qt_logs,
     resolve_output_root,
     runtime_versions,
     schedule_auto_update,
@@ -162,17 +170,17 @@ class MainWindow(QMainWindow):
         self.app_update_downloaded.connect(self._prompt_restart_for_update)
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 680)
-        # No native title bar: the menu strip carries the window controls, and
-        # the outermost FRAME_MARGIN pixels resize the window (see _frame_event).
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowSystemMenuHint
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowCloseButtonHint
-        )
-        self.setMouseTracking(True)
+        self._custom_chrome = CUSTOM_WINDOW_CHROME
+        if self._custom_chrome:
+            self.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMinimizeButtonHint
+                | Qt.WindowType.WindowMaximizeButtonHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+            self.setMouseTracking(True)
         self._drag_origin = None
         self._frame_cursor = None
         self._thread = None
@@ -278,9 +286,10 @@ class MainWindow(QMainWindow):
         self._sync_close_tooltip()
         # The panels reach the window edge, so the resize band has to see the
         # presses they would otherwise swallow.
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
+        if self._custom_chrome:
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
 
     # ---------------------------------------------------------------- layout
 
@@ -338,7 +347,6 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 4, 0, 0)
         col.setSpacing(6)
         self.grab_table = self._make_table(self.grab_proxy, GRABBER_HIDDEN)
-        self.grab_table.clicked.connect(self._toggle_grab_package)
         col.addWidget(self.grab_table, 1)
         self.extract_loader = ExtractLoader(page)
         self.extract_loader.aborted.connect(self._cancel)
@@ -426,6 +434,8 @@ class MainWindow(QMainWindow):
 
     def _sync_window_controls(self):
         """The middle button shows where it takes you, not where you are."""
+        if not self._custom_chrome:
+            return
         restore = self.isMaximized()
         self.max_btn.setProperty("iconName", "win-restore" if restore else "win-maximize")
         self.max_btn.setIcon(
@@ -500,6 +510,8 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event):
         """Resize from the window's outer pixels; drag it by the menu strip."""
+        if not self._custom_chrome:
+            return super().eventFilter(watched, event)
         if self._frame_event(watched, event):
             return True
         if watched is not self.menu_bar or not self._on_menu_gap(event):
@@ -551,20 +563,56 @@ class MainWindow(QMainWindow):
         model, _proxy, table = self._pack()
         if table is None:
             return
-        header = table.horizontalHeader()
+        header = table.header()
         if isinstance(header, CheckHeaderView):
             header.set_check_state(model.check_state_for_rows(self._visible_source_rows()))
 
+    def _tree_for(self, table):
+        if table is getattr(self, "grab_table", None):
+            return getattr(self, "grab_tree", None)
+        if table is getattr(self, "table", None):
+            return getattr(self, "download_tree", None)
+        return None
+
+    def _map_index_to_source(self, table, index):
+        tree = self._tree_for(table)
+        if tree is not None and index.model() is tree:
+            index = tree.mapToSource(index)
+        filter_proxy = self.grab_proxy if table is getattr(self, "grab_table", None) else self.proxy
+        return filter_proxy.mapToSource(index)
+
+    def _map_source_to_view(self, table, source_index):
+        filter_proxy = self.grab_proxy if table is getattr(self, "grab_table", None) else self.proxy
+        mid = filter_proxy.mapFromSource(source_index)
+        tree = self._tree_for(table)
+        if tree is not None:
+            return tree.mapFromSource(mid)
+        return mid
+
     def _make_table(self, proxy, hidden):
-        table = QTableView()
-        table.setModel(proxy)
+        tree = ReelTreeProxy(self)
+        proxy.set_tree_mode(True)
+        tree.setSourceModel(proxy)
+        if proxy is self.proxy:
+            self.download_tree = tree
+        else:
+            self.grab_tree = tree
+
+        table = QTreeView()
+        table.setModel(tree)
         table.setItemDelegateForColumn(COL_PROGRESS, ProgressDelegate(table))
+        table.setItemDelegateForColumn(COL_HOST, HosterDelegate(table))
+        variant_delegate = VariantDelegate(table)
+        variant_delegate.quality_chosen.connect(self._on_variant_quality_chosen)
+        table.setItemDelegateForColumn(COL_VARIANT, variant_delegate)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
-        table.setShowGrid(True)
+        table.setRootIsDecorated(True)
+        table.setUniformRowHeights(True)
+        table.setExpandsOnDoubleClick(False)
         table.setIconSize(QSize(16, 16))
         table.setDragEnabled(False)
         table.setAcceptDrops(False)
@@ -572,29 +620,37 @@ class MainWindow(QMainWindow):
         table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         table.customContextMenuRequested.connect(self._show_context_menu)
-        table.doubleClicked.connect(self._open_reel)
         proxy.dataChanged.connect(self._sync_header_check)
         proxy.modelReset.connect(self._sync_header_check)
         proxy.layoutChanged.connect(self._sync_header_check)
 
-        vertical = table.verticalHeader()
-        vertical.setVisible(False)
-        vertical.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        vertical.setDefaultSectionSize(24)
-
         header = CheckHeaderView(table)
-        table.setHorizontalHeader(header)
-        header.setModel(proxy)
+        table.setHeader(header)
+        header.setModel(tree)
         header.check_clicked.connect(self._toggle_visible_checks)
         header.setStretchLastSection(False)
         header.setFirstSectionMovable(True)
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_menu)
         table.selectionModel().selectionChanged.connect(self._fill_properties)
-        table.setSortingEnabled(True)
-        table.sortByColumn(COL_INDEX, Qt.SortOrder.AscendingOrder)
+        table.setSortingEnabled(False)
         self._reset_columns(table, hidden)
         return table
+
+    def _on_variant_quality_chosen(self, index, quality):
+        delegate = self.sender()
+        table = delegate.parent() if delegate is not None else None
+        if table not in (getattr(self, "grab_table", None), getattr(self, "table", None)):
+            return
+        if not index.isValid():
+            return
+        src = self._map_index_to_source(table, index)
+        model = self.grab_model if table is self.grab_table else self.model
+        reel = model.reel_at(src.row())
+        model.update_reel(reel.url, match_variant="image", image_quality=quality)
+        if model is self.model:
+            model.update_reel(reel.url, match_variant="", image_quality=quality)
+        self._fill_properties()
 
     # -------------------------------------------------------------- columns
 
@@ -608,7 +664,7 @@ class MainWindow(QMainWindow):
             if item is not None
         ]
         for view in targets:
-            header = view.horizontalHeader()
+            header = view.header()
             header.setSectionsMovable(not self._columns_locked)
             for column in range(len(COLUMNS)):
                 if column == COL_TITLE:
@@ -626,7 +682,7 @@ class MainWindow(QMainWindow):
 
     def _reset_columns(self, table=None, hidden=None):
         view = table if table is not None else self._pack()[2]
-        header = view.horizontalHeader()
+        header = view.header()
         hidden = self._hidden_columns(view) if hidden is None else hidden
         for column in range(len(COLUMNS)):
             visual = header.visualIndex(column)
@@ -651,7 +707,7 @@ class MainWindow(QMainWindow):
     def _build_column_menu(self):
         """The header menu: one checkable item per column, then layout actions."""
         _model, _proxy, table = self._pack()
-        header = table.horizontalHeader()
+        header = table.header()
         menu = QMenu(self)
         handlers = {}
         for column in sorted(range(len(COLUMNS)), key=header.visualIndex):
@@ -679,7 +735,7 @@ class MainWindow(QMainWindow):
 
     def _show_header_menu(self, point):
         menu, handlers = self._build_column_menu()
-        chosen = menu.exec(self._pack()[2].horizontalHeader().mapToGlobal(point))
+        chosen = menu.exec(self._pack()[2].header().mapToGlobal(point))
         if chosen is not None:
             handlers[chosen](chosen.isChecked())
 
@@ -914,6 +970,7 @@ class MainWindow(QMainWindow):
         if panel is None:
             return
         self._settings.setValue("views_kinds", ",".join(sorted(panel.checked_kinds())))
+        self._settings.setValue("views_folder_group", panel.folder_group_enabled())
         for key, path in panel.kind_folders().items():
             self._settings.setValue(f"views_folder_{key}", path)
         self._apply_kind_folders_to_models()
@@ -921,6 +978,10 @@ class MainWindow(QMainWindow):
     def _kind_folders(self):
         panel = getattr(self, "views", None)
         return panel.kind_folders() if panel is not None else {}
+
+    def _folder_group(self):
+        panel = getattr(self, "views", None)
+        return panel.folder_group_enabled() if panel is not None else False
 
     def _stamp_entry(self, item):
         data = dict(item) if isinstance(item, dict) else {"url": item}
@@ -949,6 +1010,32 @@ class MainWindow(QMainWindow):
                 if dest and dest != reel.save_dir:
                     model.update_reel(reel.url, save_dir=dest, match_variant=reel.variant)
 
+    def _views_layout_key(self):
+        folders = self._kind_folders()
+        return (
+            self._folder_group(),
+            tuple(sorted((key, folders.get(key, "")) for key, _label in MEDIA_KINDS)),
+        )
+
+    def _sync_views_layout(self):
+        """Rebuild package rows when Folder group or per-type save folders change."""
+        key = self._views_layout_key()
+        if key == getattr(self, "_last_views_layout", None):
+            return False
+        self._last_views_layout = key
+        folder_group, _folders = key
+        kind_folders = self._kind_folders()
+        for tree in (getattr(self, "download_tree", None), getattr(self, "grab_tree", None)):
+            if tree is not None:
+                tree.set_folder_group(folder_group)
+        for model in (getattr(self, "model", None), getattr(self, "grab_model", None)):
+            if model is not None and model.rowCount():
+                model.reshape_folder_layout(folder_group, kind_folders)
+        for table in (getattr(self, "table", None), getattr(self, "grab_table", None)):
+            if table is not None:
+                self._collapse_tree(table)
+        return True
+
     def _apply_views_filter(self):
         panel = getattr(self, "views", None)
         if panel is None:
@@ -958,6 +1045,7 @@ class MainWindow(QMainWindow):
         for proxy in (self.proxy, self.grab_proxy):
             proxy.set_kinds(kinds)
             proxy.set_hosts(hosts)
+        self._sync_views_layout()
         self._sync_header_check()
 
     def _refresh_views(self):
@@ -1398,22 +1486,36 @@ class MainWindow(QMainWindow):
         menu.addAction(action)
         return action
 
+    def _build_logo(self):
+        logo = QLabel()
+        logo.setObjectName("logo")
+        logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(18, 18))
+        logo.setContentsMargins(6, 0, 4, 0)
+        return logo
+
+    def _embed_toolbar_logo(self):
+        """On macOS the menus live in the system bar; keep the logo on the tool strip."""
+        bar = self.start_btn.parentWidget()
+        layout = bar.layout()
+        layout.insertWidget(0, self.logo)
+        layout.insertWidget(1, self._tool_sep())
+
     def _build_menus(self):
         """Window menu above the toolbar; it owns the shortcuts so they are discoverable."""
         bar = QMenuBar(self)
-        bar.setNativeMenuBar(False)
+        bar.setNativeMenuBar(not self._custom_chrome)
         self.setMenuBar(bar)
         self.menu_bar = bar
 
-        # The logo rides in the menu strip's left corner, ahead of File.
-        self.logo = QLabel()
-        self.logo.setObjectName("logo")
-        self.logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(18, 18))
-        self.logo.setContentsMargins(6, 0, 4, 0)
-        bar.setCornerWidget(self.logo, Qt.Corner.TopLeftCorner)
-        self.win_controls = self._build_window_controls()
-        bar.setCornerWidget(self.win_controls, Qt.Corner.TopRightCorner)
-        bar.installEventFilter(self)
+        self.logo = self._build_logo()
+        if self._custom_chrome:
+            bar.setCornerWidget(self.logo, Qt.Corner.TopLeftCorner)
+            self.win_controls = self._build_window_controls()
+            bar.setCornerWidget(self.win_controls, Qt.Corner.TopRightCorner)
+            bar.installEventFilter(self)
+        else:
+            self.win_controls = None
+            self._embed_toolbar_logo()
 
         file_menu = bar.addMenu("&File")
         self.act_collect = self._action(
@@ -1811,6 +1913,13 @@ class MainWindow(QMainWindow):
 
     def set_urls(self, urls):
         self.model.set_urls([self._stamp_entry(item) for item in urls])
+        if self.model.rowCount():
+            self.model.reshape_folder_layout(
+                self._folder_group(), self._kind_folders(),
+            )
+        self._last_views_layout = self._views_layout_key()
+        for url in self.model.urls():
+            self._sync_output_tree(url)
         self.table.sortByColumn(COL_INDEX, Qt.SortOrder.AscendingOrder)
         self.table.scrollToTop()
         self._sync_header_check()
@@ -1862,8 +1971,15 @@ class MainWindow(QMainWindow):
     def _finish_grab_sync(self):
         self.grab_table.sortByColumn(COL_INDEX, Qt.SortOrder.AscendingOrder)
         self.grab_proxy.invalidate()
+        self._collapse_tree(self.grab_table)
         self._sync_header_check()
         self._update_counter()
+
+    def _collapse_tree(self, table):
+        """Keep package folders collapsed; flat single-file rows stay as-is."""
+        if table is None:
+            return
+        table.collapseAll()
 
     def _insert_grab_urls(self, urls, light=False):
         known = set(self.grab_model.urls())
@@ -1875,8 +1991,16 @@ class MainWindow(QMainWindow):
         dupes = sum(1 for url in requested if url in known)
         expanded = []
         folders = self._kind_folders()
+        kinds = None
+        if hasattr(self, "views") and self.views is not None:
+            kinds = self.views.checked_kinds() or {"video"}
         for item in urls:
-            expanded.extend(extract_package_rows(self._stamp_entry(item), kind_folders=folders))
+            expanded.extend(extract_package_rows(
+                self._stamp_entry(item),
+                kinds=kinds,
+                kind_folders=folders,
+                folder_group=self._folder_group(),
+            ))
         table = self.grab_table
         table.setUpdatesEnabled(False)
         try:
@@ -1901,26 +2025,12 @@ class MainWindow(QMainWindow):
             self.counter.setText(f"{self.grab_model.package_count()} listed")
         return added
 
-    def _toggle_grab_package(self, index):
-        """Expand or collapse a collected package when its Name cell is clicked."""
-        if not index.isValid() or index.column() not in (COL_TITLE, COL_ICON):
-            return
-        src = self.grab_proxy.mapToSource(index)
-        reel = self.grab_model.reel_at(src.row())
-        if reel.variant:
-            return
-        if not any(
-            self.grab_model.reel_at(row).url == reel.url
-            and self.grab_model.reel_at(row).variant
-            for row in range(self.grab_model.rowCount())
-        ):
-            return
-        self.grab_model.toggle_expanded(reel.url)
-        self.grab_proxy.invalidate()
-
     def _set_grab_packages_expanded(self, expanded):
-        if self.grab_model.set_all_expanded(expanded):
-            self.grab_proxy.invalidate()
+        self.grab_model.set_all_expanded(expanded)
+        if expanded:
+            self.grab_table.expandAll()
+        else:
+            self._collapse_tree(self.grab_table)
 
     def add_urls(self, urls):
         return self.add_grab_urls(urls)
@@ -1977,7 +2087,7 @@ class MainWindow(QMainWindow):
     def _move_selected(self, delta):
         model, proxy, table = self._pack()
         rows = [
-            proxy.mapToSource(proxy.index(index.row(), 0)).row()
+            self._map_index_to_source(table, index).row()
             for index in table.selectionModel().selectedRows()
         ]
         moved = model.move_rows(rows, delta)
@@ -1989,10 +2099,10 @@ class MainWindow(QMainWindow):
             | QItemSelectionModel.SelectionFlag.Rows
         )
         for row in moved:
-            mapped = proxy.mapFromSource(model.index(row, 0))
+            mapped = self._map_source_to_view(table, model.index(row, 0))
             if mapped.isValid():
                 table.selectionModel().select(mapped, flags)
-        current = proxy.mapFromSource(model.index(moved[0], 0))
+        current = self._map_source_to_view(table, model.index(moved[0], 0))
         if current.isValid():
             table.setCurrentIndex(current)
         if model is self.model:
@@ -2093,29 +2203,35 @@ class MainWindow(QMainWindow):
 
     def _sync_output_tree(self, url):
         """Show the save folder as the parent and files in that folder as children."""
-        for model, expand in ((self.model, True), (self.grab_model, False)):
+        for model, table in ((self.model, self.table), (self.grab_model, self.grab_table)):
             reel = model.package_reel(url)
             if reel is None:
                 continue
             folder = self._folder_for_reel(reel)
-            files = [
+            raw = [
                 path for path in store.list_output_files(folder, reel.rid, reel.filepath)
                 if os.path.isfile(path)
                 and not path.endswith((".part", ".ytdl"))
             ]
-            if not files:
+            if not raw:
                 continue
-            model.attach_output_files(url, folder, files, expand=expand)
-            if expand:
+            model.attach_output_files(
+                url, folder, raw, expand=False, folder_group=self._folder_group(),
+            )
+            if model is self.model:
                 self.proxy.invalidate()
+                self._collapse_tree(table)
             else:
                 self.grab_proxy.invalidate()
+                self._collapse_tree(table)
 
     def _selected_reels(self):
-        model, proxy, table = self._pack()
-        rows = {index.row() for index in table.selectionModel().selectedRows()}
-        return [model.reel_at(proxy.mapToSource(proxy.index(r, 0)).row())
-                for r in sorted(rows)]
+        model, _proxy, table = self._pack()
+        rows = sorted({
+            self._map_index_to_source(table, index).row()
+            for index in table.selectionModel().selectedRows()
+        })
+        return [model.reel_at(row) for row in rows]
 
     def _context_action(self, menu, text, slot, icon=""):
         color = self._icon_color()
@@ -2126,10 +2242,10 @@ class MainWindow(QMainWindow):
         return action
 
     def _set_selected_checks(self, checked):
-        model, proxy, table = self._pack()
+        model, _proxy, table = self._pack()
         rows = [
-            proxy.mapToSource(proxy.index(row, 0)).row()
-            for row in {index.row() for index in table.selectionModel().selectedRows()}
+            self._map_index_to_source(table, index).row()
+            for index in table.selectionModel().selectedRows()
         ]
         model.set_checked_rows(rows, checked)
         self._sync_header_check()
@@ -2264,7 +2380,13 @@ class MainWindow(QMainWindow):
         for url in urls:
             base = dict(bases.get(url) or {"url": url})
             base.pop("variant", None)
-            for item in extract_package_rows(base):
+            kinds = self.views.checked_kinds() if hasattr(self, "views") else None
+            for item in extract_package_rows(
+                base,
+                kinds=kinds,
+                kind_folders=self._kind_folders(),
+                folder_group=self._folder_group(),
+            ):
                 key = (item.get("url"), item.get("variant") or "")
                 if key not in have:
                     extras.append(item)
@@ -2344,21 +2466,15 @@ class MainWindow(QMainWindow):
             return
         index = table.indexAt(point)
         if index.isValid() and not table.selectionModel().isSelected(index):
-            table.selectRow(index.row())
+            table.selectionModel().select(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
         menu = self._context_menu_for(table)
         if menu.isEmpty():
             return
         menu.exec(table.viewport().mapToGlobal(point))
-
-    def _open_reel(self, index):
-        if index.column() == COL_CHECK:
-            return
-        model, proxy, _table = self._pack()
-        row = proxy.mapToSource(index).row()
-        reel = model.reel_at(row)
-        if model is self.grab_model and not reel.variant:
-            return
-        QDesktopServices.openUrl(QUrl(reel.url))
 
     def _reveal(self, reel):
         folder = self._folder_for_reel(reel)
@@ -2570,9 +2686,31 @@ class MainWindow(QMainWindow):
             "Status": status,
         }
 
+    def _grab_panel_visible(self):
+        panel = self.grab_panel
+        return not panel.isHidden() or panel.is_pinned()
+
+    def _grab_notification_text(self, status):
+        readings = self._grab_readings(status)
+        return (
+            f"{readings['Found Link(s)']} found · {readings['Duplicate(s)']} duplicates\n"
+            f"{readings['Grabber list']} in grabber · "
+            f"{readings['Download queue']} in download"
+        )
+
     def _show_grab_panel(self, status, begin=False):
         panel = self.grab_panel
         readings = self._grab_readings(status)
+        if use_grabber_notifications() and not self._grab_panel_visible():
+            if begin:
+                notify(self, "Parse Clipboard", status)
+            elif status == "Waiting for login":
+                notify(
+                    self,
+                    "Parse Clipboard",
+                    "Log in in Chrome, then click Continue login.",
+                )
+            return
         if begin or (self._collecting and panel.isHidden()):
             panel.begin_run(readings, self._grab_current)
         elif not panel.isHidden():
@@ -2580,6 +2718,14 @@ class MainWindow(QMainWindow):
         self._place_grab_panel()
 
     def _end_grab_panel(self, status):
+        if use_grabber_notifications() and not self._grab_panel_visible():
+            if status in ("Done!", "Aborted", "Failed", "Idle"):
+                notify(
+                    self,
+                    f"Parse Clipboard — {status}",
+                    self._grab_notification_text(status),
+                )
+            return
         self.grab_panel.end_run(self._grab_readings(status), self._grab_current)
         self._place_grab_panel()
         if status in ("Done!", "Aborted", "Idle"):
@@ -2867,18 +3013,29 @@ class MainWindow(QMainWindow):
                 if reel.variant == "image":
                     quality_by_url[reel.url] = reel.image_quality or "best"
                 templates.setdefault(reel.url, reel)
+        folders = self._kind_folders()
+        folder_group = self._folder_group()
         entries = []
         for url, reel in templates.items():
-            entry = reel.as_entry()
-            entry["status"] = "queued"
-            entry["percent"] = 0
-            entry["filepath"] = ""
-            entry["variant"] = ""
-            entry["media_kinds"] = kinds_by_url.get(url) or set()
-            entry["image_quality"] = quality_by_url.get(url, "")
-            if not entry.get("save_dir"):
-                entry["save_dir"] = default_dir
-            entries.append(entry)
+            base = reel.as_entry()
+            base["status"] = "queued"
+            base["percent"] = 0
+            base["filepath"] = ""
+            kinds = kinds_by_url.get(url) or set()
+            base["media_kinds"] = kinds
+            base["image_quality"] = quality_by_url.get(url, "")
+            if not base.get("save_dir"):
+                base["save_dir"] = default_dir
+            for item in extract_package_rows(
+                base,
+                kinds=tuple(kinds) or None,
+                kind_folders=folders,
+                folder_group=folder_group,
+            ):
+                item["status"] = "queued"
+                item["percent"] = 0
+                item["filepath"] = ""
+                entries.append(item)
         added = self.model.add_entries(entries)
         self.grab_model.remove_urls(list(templates))
         skipped = len(entries) - added
@@ -2941,20 +3098,31 @@ class MainWindow(QMainWindow):
         elif self.model.counts().get("done"):
             self._append_log(f"Continuing {len(urls)} remaining item(s).")
         wanted = set(urls)
-        group_by_source = self._settings.value("group_downloads", False, bool)
+        per_link_folders = (
+            self._settings.value("group_downloads", False, bool)
+            or self._folder_group()
+        )
         folders = {}
         url_media_kinds = {}
         for row in range(self.model.rowCount()):
             reel = self.model.reel_at(row)
             if reel.url not in wanted:
                 continue
-            dest = (reel.save_dir or "").strip()
-            if group_by_source:
-                name = source_folder_name(reel.title, reel.description, reel.rid)
+            if reel.variant:
+                url_media_kinds.setdefault(reel.url, set()).add(reel.variant)
+            elif reel.media_kinds:
+                url_media_kinds.setdefault(reel.url, set()).update(set(reel.media_kinds))
+        for url in wanted:
+            pkg = self.model.package_reel(url)
+            if pkg is None:
+                continue
+            dest = (pkg.save_dir or "").strip()
+            if per_link_folders:
+                name = source_folder_name(pkg.title, pkg.description, pkg.rid)
                 dest = os.path.join(dest, name) if dest else name
-            folders[reel.url] = dest
-            if reel.media_kinds:
-                url_media_kinds[reel.url] = set(reel.media_kinds)
+            folders[url] = dest
+            if pkg.media_kinds and url not in url_media_kinds:
+                url_media_kinds[url] = set(pkg.media_kinds)
         self._run(JobWorker(
             "download",
             channel,
@@ -2967,10 +3135,10 @@ class MainWindow(QMainWindow):
 
     def _speed(self):
         get = self._settings.value
-        kinds = ALL_MEDIA_KINDS
+        kinds = {"video"}
         panel = getattr(self, "views", None)
         if panel is not None:
-            kinds = panel.checked_kinds() or ALL_MEDIA_KINDS
+            kinds = panel.checked_kinds() or {"video"}
         return {
             "workers": int(get("workers", DEFAULT_WORKERS)),
             "fragments": int(get("fragments", DEFAULT_FRAGMENTS)),
@@ -3208,6 +3376,7 @@ class MainWindow(QMainWindow):
             for key, _label in MEDIA_KINDS:
                 folders[key] = get(f"views_folder_{key}", "", str)
             self.views.set_kind_folders(folders)
+            self.views.set_folder_group(get("views_folder_group", False, bool), emit=False)
             self._apply_kind_folders_to_models()
             self._apply_views_filter()
         geometry = get("geometry")
@@ -3223,7 +3392,7 @@ class MainWindow(QMainWindow):
         self._sync_save_path_edit()
         state = get("header_v8")
         if state:
-            self.table.horizontalHeader().restoreState(state)
+            self.table.header().restoreState(state)
             self._apply_column_modes()
 
     def _restore_tool_settings(self):
@@ -3305,6 +3474,7 @@ class MainWindow(QMainWindow):
         put("link_grabber", self.act_grabber.isChecked())
         if hasattr(self, "views"):
             put("views_kinds", ",".join(sorted(self.views.checked_kinds())))
+            put("views_folder_group", self.views.folder_group_enabled())
             for key, path in self.views.kind_folders().items():
                 put(f"views_folder_{key}", path)
         put("geometry", self.saveGeometry())
@@ -3312,7 +3482,7 @@ class MainWindow(QMainWindow):
             put("work_split", self.work_split.saveState())
         if hasattr(self, "splitter"):
             put("main_split", self.splitter.saveState())
-        put("header_v8", self.table.horizontalHeader().saveState())
+        put("header_v8", self.table.header().saveState())
         put("columns_locked", self._columns_locked)
         if getattr(self, "grab_panel", None):
             put("grab_monitor", self.grab_panel.saveGeometry())
@@ -3383,8 +3553,11 @@ class MainWindow(QMainWindow):
 
 
 def run_gui(argv=None):
+    quiet_qt_logs()
     argv = argv if argv is not None else sys.argv
     app = QApplication.instance() or QApplication(argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
     setup_app_font(app)
     app.setStyle("Fusion")
     app.setStyleSheet(theme.stylesheet(theme.DEFAULT_DARK))
