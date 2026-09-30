@@ -1493,7 +1493,10 @@ class GuiSmoke(unittest.TestCase):
         titles = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
         self.assertEqual(
             titles,
-            ["General", "Download", "Grabber", "Notifications", "Appearance", "Tools"],
+            [
+                "General", "Download", "Grabber", "Notifications", "Appearance",
+                "Cookies", "Tools",
+            ],
         )
         general = dialog.tabs.widget(0)
         download = dialog.tabs.widget(1)
@@ -1545,6 +1548,15 @@ class GuiSmoke(unittest.TestCase):
             dialog.chrome.sizePolicy().verticalPolicy(),
             QSizePolicy.Policy.Fixed,
         )
+
+    def test_settings_cookies_tab_holds_browser_and_curl_fields(self):
+        dialog = SettingsDialog(self.window._settings, self.window)
+        titles = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
+        cookies_page = dialog.tabs.widget(titles.index("Cookies"))
+        self.assertTrue(cookies_page.isAncestorOf(dialog.cookies_browser))
+        self.assertTrue(cookies_page.isAncestorOf(dialog.cookies_json))
+        self.assertTrue(cookies_page.isAncestorOf(dialog.cookies_json_profile))
+        self.assertTrue(cookies_page.isAncestorOf(dialog.cookies_curl))
         self.assertEqual(
             dialog.cookies_curl.sizePolicy().verticalPolicy(),
             QSizePolicy.Policy.Expanding,

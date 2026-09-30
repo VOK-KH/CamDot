@@ -345,6 +345,11 @@ class Model(unittest.TestCase):
         self.assertEqual(rows[0].get("variant"), "")
         self.assertEqual(rows[0].get("media_kinds"), "video")
 
+    def test_extract_package_rows_default_kind_is_video_only(self):
+        rows = extract_package_rows({"url": URLS[0], "title": "Clip"})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("media_kinds"), "video")
+
     def test_extract_package_rows_folder_group_builds_tree(self):
         rows = extract_package_rows(
             {"url": URLS[0], "title": "Clip"},

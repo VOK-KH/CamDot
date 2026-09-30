@@ -381,6 +381,10 @@ class SourceFolderName(unittest.TestCase):
         name = source_folder_name("", "NA", "abc123")
         self.assertRegex(name, r"^[0-9a-f]{8}-abc123$")
 
+    def test_placeholder_title_uses_hex_not_default_folder(self):
+        name = source_folder_name("default", "", "abc123")
+        self.assertRegex(name, r"^[0-9a-f]{8}-abc123$")
+
     def test_empty_without_rid_is_hex_only(self):
         name = source_folder_name("", "", "")
         self.assertRegex(name, r"^[0-9a-f]{8}$")

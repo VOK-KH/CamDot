@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 
 from app.core import icons, store, sysinfo, telegram_notify, theme
 from app.core.collect import cookies_from_browser_value, write_entries_csv
-from app.core.cookies import write_netscape_cookies
+from app.core.cookies import prepare_cookies_file
 from app.core.download import (
     ALL_MEDIA_KINDS, DEFAULT_FRAGMENTS, DEFAULT_WORKERS, OUTPUT_TEMPLATE,
     read_urls, resolve_filename_template, source_folder_name, tiktok_dateafter,
@@ -3021,14 +3021,14 @@ class MainWindow(QMainWindow):
             base["status"] = "queued"
             base["percent"] = 0
             base["filepath"] = ""
-            kinds = kinds_by_url.get(url) or set()
+            kinds = kinds_by_url.get(url) or set(view_kinds) or {"video"}
             base["media_kinds"] = kinds
             base["image_quality"] = quality_by_url.get(url, "")
             if not base.get("save_dir"):
                 base["save_dir"] = default_dir
             for item in extract_package_rows(
                 base,
-                kinds=tuple(kinds) or None,
+                kinds=tuple(sorted(kinds)),
                 kind_folders=folders,
                 folder_group=folder_group,
             ):
@@ -3102,6 +3102,9 @@ class MainWindow(QMainWindow):
             self._settings.value("group_downloads", False, bool)
             or self._folder_group()
         )
+        view_kinds = (
+            self.views.checked_kinds() if hasattr(self, "views") else None
+        ) or {"video"}
         folders = {}
         url_media_kinds = {}
         for row in range(self.model.rowCount()):
@@ -3109,9 +3112,12 @@ class MainWindow(QMainWindow):
             if reel.url not in wanted:
                 continue
             if reel.variant:
-                url_media_kinds.setdefault(reel.url, set()).add(reel.variant)
+                if reel.variant in view_kinds:
+                    url_media_kinds.setdefault(reel.url, set()).add(reel.variant)
             elif reel.media_kinds:
-                url_media_kinds.setdefault(reel.url, set()).update(set(reel.media_kinds))
+                picked = set(reel.media_kinds) & view_kinds
+                if picked:
+                    url_media_kinds.setdefault(reel.url, set()).update(picked)
         for url in wanted:
             pkg = self.model.package_reel(url)
             if pkg is None:
@@ -3121,8 +3127,13 @@ class MainWindow(QMainWindow):
                 name = source_folder_name(pkg.title, pkg.description, pkg.rid)
                 dest = os.path.join(dest, name) if dest else name
             folders[url] = dest
-            if pkg.media_kinds and url not in url_media_kinds:
-                url_media_kinds[url] = set(pkg.media_kinds)
+            if url not in url_media_kinds:
+                stored = set(pkg.media_kinds or ()) & view_kinds
+                url_media_kinds[url] = stored or set(view_kinds)
+            else:
+                url_media_kinds[url] = set(url_media_kinds[url]) & view_kinds
+                if not url_media_kinds[url]:
+                    url_media_kinds[url] = set(view_kinds)
         self._run(JobWorker(
             "download",
             channel,
@@ -3152,7 +3163,11 @@ class MainWindow(QMainWindow):
                 get("cookies_browser", "", str),
                 get("cookies_profile", "", str),
             ),
-            "cookies_file": write_netscape_cookies(get("cookies_curl", "", str)),
+            "cookies_file": prepare_cookies_file(
+                curl_text=get("cookies_curl", "", str),
+                json_path=get("cookies_json", "", str),
+                profile_id=get("cookies_json_profile", "", str),
+            ),
             "dateafter": tiktok_dateafter(get("tiktok_age_days", "", str)),
             "limit_rate": (
                 get("speed_limit", "", str).strip()

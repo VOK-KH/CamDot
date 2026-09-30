@@ -201,27 +201,19 @@ class ViewsPanel(QFrame):
         self.host_list.blockSignals(False)
 
     def _host_icon(self, host):
-        """Bundled SVG for known hosts; generic now, favicon later for unknowns."""
+        """Site favicon from app cache; fetch in the background when missing."""
         color = self._icon_color
         if not host or host == "-":
             return platform_icons.icon_for(domain=host or "", fetch=False, color=color)
-        name = platform_icons.platform_from_extractor("", host)
-        if name:
-            return platform_icons.icon_for(
-                platform=name, domain=host, fetch=False, color=color,
-            )
-        dest = self._cached_favicon(host)
+        dest = platform_icons.favicon_cache_path(host)
         if dest:
-            return platform_icons.icon_for(domain=host, fetch=True, color=color)
+            return QIcon(dest)
+        icon = platform_icons.host_color_icon(host, fetch=False, color=color)
         self._queue_favicon(host)
-        return platform_icons.icon_for(domain=host, fetch=False, color=color)
+        return icon
 
     def _cached_favicon(self, host):
-        host_key = (host or "").lower().split(":")[0].removeprefix("www.")
-        dest = os.path.join(platform_icons.cache_dir(), f"{host_key}.ico")
-        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
-            return dest
-        return ""
+        return platform_icons.favicon_cache_path(host)
 
     def _queue_favicon(self, host):
         if host in self._fetch_started:

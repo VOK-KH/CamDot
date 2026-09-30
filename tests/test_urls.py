@@ -259,6 +259,9 @@ class ClassifySource(unittest.TestCase):
         self.assertEqual(classify_source("https://www.tiktok.com/@user/video/1"), SINGLE)
         self.assertEqual(classify_source("https://www.tiktok.com/@user"), FEED)
         self.assertEqual(classify_source("https://www.tiktok.com/tag/dance"), UNSUPPORTED_FEED)
+        self.assertEqual(classify_source("https://www.tiktok.com/"), UNSUPPORTED_FEED)
+        with self.assertRaises(ValueError):
+            normalize_source_url("https://www.tiktok.com/")
 
     def test_youtube(self):
         self.assertEqual(classify_source("https://www.youtube.com/watch?v=dQw4w9wgGcQ"), SINGLE)

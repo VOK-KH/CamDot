@@ -24,6 +24,7 @@ PLATFORM_KEYS = {
 
 FAVICON_HOST = "icons.duckduckgo.com"
 FAVICON_MAX_BYTES = 100_000
+_GOOGLE_FAVICON = "https://www.google.com/s2/favicons?domain={host}&sz=32"
 
 
 def platform_from_extractor(extractor_key="", domain=""):
@@ -78,30 +79,65 @@ def cache_dir(output_root="output"):
     return os.path.join(util_cache_dir(), "favicons")
 
 
-def fetch_favicon(domain, dest_dir, opener=None):
-    """Download a favicon for an unknown host into dest_dir. Returns the path or ''."""
+def favicon_cache_path(domain, dest_dir=None):
+    """Cached favicon path under app data, or '' if missing."""
     host = _safe_domain(domain)
     if not host:
         return ""
-    os.makedirs(dest_dir, exist_ok=True)
-    dest = os.path.join(dest_dir, f"{host}.ico")
-    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
-        return dest
-    url = f"https://{FAVICON_HOST}/ip3/{host}.ico"
+    folder = dest_dir or cache_dir()
+    for ext in ("ico", "png"):
+        path = os.path.join(folder, f"{host}.{ext}")
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+    return ""
+
+
+def _download_favicon(url, dest, opener=None, allowed_hosts=None):
+    allowed = set(allowed_hosts or ())
     try:
         request = urllib.request.Request(url, headers={"User-Agent": APP_SLUG})
         fetch = opener or urllib.request.urlopen
         with fetch(request, timeout=5) as response:
-            if urlparse(response.geturl()).hostname not in (FAVICON_HOST,):
-                return ""
+            host = urlparse(response.geturl()).hostname or ""
+            if allowed and host not in allowed:
+                return False
             data = response.read(FAVICON_MAX_BYTES + 1)
         if not data or len(data) > FAVICON_MAX_BYTES:
-            return ""
-        with open(dest, "wb") as f:
-            f.write(data)
-        return dest
+            return False
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "wb") as handle:
+            handle.write(data)
+        return True
     except Exception:
+        return False
+
+
+def fetch_favicon(domain, dest_dir, opener=None):
+    """Download a site favicon into dest_dir (app cache). Returns the path or ''."""
+    host = _safe_domain(domain)
+    if not host:
         return ""
+    os.makedirs(dest_dir, exist_ok=True)
+    cached = favicon_cache_path(host, dest_dir)
+    if cached:
+        return cached
+    dest_ico = os.path.join(dest_dir, f"{host}.ico")
+    if _download_favicon(
+        f"https://{FAVICON_HOST}/ip3/{host}.ico",
+        dest_ico,
+        opener=opener,
+        allowed_hosts={FAVICON_HOST},
+    ):
+        return dest_ico
+    dest_png = os.path.join(dest_dir, f"{host}.png")
+    if _download_favicon(
+        _GOOGLE_FAVICON.format(host=host),
+        dest_png,
+        opener=opener,
+        allowed_hosts={"www.google.com", "google.com"},
+    ):
+        return dest_png
+    return ""
 
 
 @lru_cache(maxsize=64)
@@ -112,18 +148,31 @@ def _file_icon(path, size=16):
     return QIcon(pixmap.scaled(size, size))
 
 
+def host_color_icon(domain, fetch=True, size=16, color="#e7ecf3"):
+    """Colored site favicon from app cache, fetched on first use when ``fetch`` is true."""
+    host = _safe_domain(domain)
+    folder = cache_dir()
+    if fetch and host:
+        fetch_favicon(host, folder)
+    path = favicon_cache_path(host or domain, folder)
+    if path:
+        return _file_icon(path, size)
+    name = platform_from_extractor("", domain)
+    return icon_for(platform=name, domain=domain, fetch=False, color=color)
+
+
 def icon_for(platform="", domain="", extractor_key="", output_root="output", fetch=False, color="#e7ecf3"):
     """Return a QIcon for the host. Known platforms use bundled SVGs."""
     name = platform or platform_from_extractor(extractor_key, domain)
+    if fetch and domain:
+        path = fetch_favicon(domain, cache_dir(output_root))
+        if path:
+            return _file_icon(path)
     if name in PLATFORM_KEYS:
         try:
             return icons.icon(PLATFORM_KEYS[name], color, 16)
         except OSError:
             pass
-    if fetch and domain and name not in PLATFORM_KEYS:
-        path = fetch_favicon(domain, cache_dir(output_root))
-        if path:
-            return _file_icon(path)
     try:
         return icons.icon("platform-generic", color, 16)
     except OSError:

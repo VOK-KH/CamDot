@@ -307,7 +307,7 @@ def extract_package_rows(entry, kinds=None, kind_folders=None, folder_group=Fals
     data = dict(entry) if isinstance(entry, dict) else {"url": entry}
     if data.get("variant"):
         return [data]
-    kinds = tuple(kinds) if kinds else tuple(key for key, _label in MEDIA_KINDS)
+    kinds = tuple(kinds) if kinds else ("video",)
     folders = kind_folders or {}
     has_kind_folders = any(str(folders.get(key) or "").strip() for key in kinds)
     if not folder_group:

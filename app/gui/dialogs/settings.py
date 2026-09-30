@@ -1,7 +1,7 @@
 """Application settings dialog."""
 import os
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QSize
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -38,6 +38,9 @@ from app.core.download import (
     filename_template_for_preset,
     resolve_filename_template,
 )
+from app.core import icons
+from app.core.cookies import list_cookie_profile_choices
+from app.core.platform_icons import host_color_icon
 from app.core.runtime import default_output_root, resolve_output_root
 from app.core.theme import DEFAULT_DARK, DEFAULT_PRIMARY, THEME_STYLES, normalize_hex
 
@@ -60,9 +63,10 @@ TIKTOK_AGE_CHOICES = (
 
 
 class PathField(QWidget):
-    def __init__(self, mode="file", parent=None):
+    def __init__(self, mode="file", parent=None, *, name_filter=""):
         super().__init__(parent)
         self.mode = mode
+        self._name_filter = name_filter
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
@@ -77,7 +81,12 @@ class PathField(QWidget):
         if self.mode == "directory":
             path = QFileDialog.getExistingDirectory(self, "Choose folder", self.edit.text())
         else:
-            path, _ = QFileDialog.getOpenFileName(self, "Choose executable", self.edit.text())
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Choose file",
+                self.edit.text(),
+                self._name_filter or "All files (*)",
+            )
         if path:
             self.edit.setText(path)
 
@@ -138,6 +147,7 @@ class SettingsDialog(QDialog):
         self._build_grabber_tab()
         self._build_notifications_tab()
         self._build_appearance_tab()
+        self._build_cookies_tab()
         self._build_tools_tab()
 
         buttons = QDialogButtonBox(
@@ -405,24 +415,24 @@ class SettingsDialog(QDialog):
         look.addRow("Theme style", self.theme_style)
         look.addRow("Primary color", self.primary)
 
-    def _build_tools_tab(self):
-        tools_form = self._add_tab("Tools")
-        self.chrome = PathField()
-        self.chrome.edit.setPlaceholderText("Facebook reels collection only")
-        self.ffmpeg = PathField()
-        self.ffmpeg.edit.setPlaceholderText("automatic from PATH")
+    def _build_cookies_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+        form = QFormLayout()
+        _compact_form(form)
         self.cookies_browser = QComboBox()
         for label, value in COOKIE_BROWSERS:
             self.cookies_browser.addItem(label, value)
-        self.cookies_profile = QLineEdit()
-        self.cookies_profile.setPlaceholderText("optional browser profile name")
-        self.cookies_curl = QPlainTextEdit()
-        self.cookies_curl.setPlaceholderText(
-            "Kuaishou / Douyin: paste a Cookie header or a copied cURL command"
+        self.cookies_browser.setToolTip(
+            "yt-dlp reads cookies from this browser (same Mac user). Use None if you "
+            "only paste a Cookie / cURL below."
         )
-        self.cookies_curl.setMinimumHeight(72)
-        self.cookies_curl.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding,
+        self.cookies_profile = QLineEdit()
+        self.cookies_profile.setPlaceholderText("optional profile name, e.g. Default")
+        self.cookies_profile.setToolTip(
+            "Leave empty for the default profile. Chrome on macOS often uses Default."
         )
         self.cookies_browser.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed,
@@ -430,11 +440,77 @@ class SettingsDialog(QDialog):
         self.cookies_profile.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed,
         )
+        form.addRow("Cookies from browser", self.cookies_browser)
+        form.addRow("Browser profile", self.cookies_profile)
+        self.cookies_json = PathField(
+            "file",
+            name_filter="Cookie JSON (*.json);;All files (*)",
+        )
+        self.cookies_json.edit.setPlaceholderText(
+            "cookies.json or profiles.json (multi-account export)"
+        )
+        self.cookies_json.setToolTip(
+            "Single-site JSON from Cookie-Editor, or a profiles file with several "
+            "saved accounts. Takes priority over the paste box below."
+        )
+        self.cookies_json_profile = QComboBox()
+        self.cookies_json_profile.setIconSize(QSize(16, 16))
+        self.cookies_json_profile.setToolTip(
+            "Pick one saved account, or merge every account in the profiles file."
+        )
+        self.cookies_json_profile.setEnabled(False)
+        form.addRow("Cookie export file", self.cookies_json)
+        form.addRow("Saved account", self.cookies_json_profile)
+        self.cookies_json.edit.textChanged.connect(self._refresh_cookie_profile_choices)
+        layout.addLayout(form)
+
+        curl_title = QLabel("Cookie header or cURL command")
+        curl_title.setObjectName("settingsCookiesCurlLabel")
+        self.cookies_curl = QPlainTextEdit()
+        self.cookies_curl.setPlaceholderText(
+            "Paste Cookie: ttwid=…; msToken=… or a full curl 'https://www.tiktok.com/…' "
+            "-H 'cookie: …' line from DevTools."
+        )
+        self.cookies_curl.setMinimumHeight(120)
+        self.cookies_curl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(curl_title)
+        layout.addWidget(self.cookies_curl, 1)
+        self.tabs.addTab(page, "Cookies")
+
+    def _refresh_cookie_profile_choices(self, keep_id=""):
+        path = self.cookies_json.text().strip()
+        wanted = keep_id or self.cookies_json_profile.currentData() or ""
+        choices = list_cookie_profile_choices(path)
+        self.cookies_json_profile.blockSignals(True)
+        self.cookies_json_profile.clear()
+        if not choices:
+            self.cookies_json_profile.setEnabled(False)
+            self.cookies_json_profile.blockSignals(False)
+            return
+        if len(choices) > 1:
+            merge_icon = icons.icon("globe", self.primary.hex(), 16)
+            self.cookies_json_profile.addItem(merge_icon, "All accounts (merged)", "")
+        for profile_id, label, domain in choices:
+            icon = host_color_icon(domain, fetch=True, size=16, color=self.primary.hex())
+            self.cookies_json_profile.addItem(icon, label, profile_id)
+        self.cookies_json_profile.setEnabled(True)
+        index = self.cookies_json_profile.findData(wanted)
+        if index < 0 and len(choices) == 1:
+            index = 0
+        if index >= 0:
+            self.cookies_json_profile.setCurrentIndex(index)
+        self.cookies_json_profile.blockSignals(False)
+
+    def _build_tools_tab(self):
+        tools_form = self._add_tab("Tools")
+        self.chrome = PathField()
+        self.chrome.edit.setPlaceholderText("Facebook reels collection only")
+        self.ffmpeg = PathField()
+        self.ffmpeg.edit.setPlaceholderText("automatic from PATH")
         tools_form.addRow("Chrome executable", self.chrome)
         tools_form.addRow("FFmpeg executable/folder", self.ffmpeg)
-        tools_form.addRow("Cookies from browser", self.cookies_browser)
-        tools_form.addRow("Browser profile", self.cookies_profile)
-        tools_form.addRow("Cookie / cURL", self.cookies_curl)
 
     def _set_filename_preset(self, key, emit=False):
         index = self.filename_preset.findData(key)
@@ -505,6 +581,8 @@ class SettingsDialog(QDialog):
         index = self.cookies_browser.findData(browser)
         self.cookies_browser.setCurrentIndex(max(index, 0))
         self.cookies_profile.setText(get("cookies_profile", "", str))
+        self.cookies_json.setText(get("cookies_json", "", str))
+        self._refresh_cookie_profile_choices(keep_id=get("cookies_json_profile", "", str))
         self.cookies_curl.setPlainText(get("cookies_curl", "", str))
         age = get("tiktok_age_days", "", str)
         age_index = self.tiktok_age.findData(age)
@@ -540,6 +618,8 @@ class SettingsDialog(QDialog):
         self.ffmpeg.setText("")
         self.cookies_browser.setCurrentIndex(0)
         self.cookies_profile.clear()
+        self.cookies_json.setText("")
+        self._refresh_cookie_profile_choices()
         self.cookies_curl.clear()
         self.tiktok_age.setCurrentIndex(0)
         self.notify_enabled.setChecked(False)
@@ -582,6 +662,9 @@ class SettingsDialog(QDialog):
         self.settings.setValue("ffmpeg_location", self.ffmpeg.text())
         self.settings.setValue("cookies_browser", self.cookies_browser.currentData() or "")
         self.settings.setValue("cookies_profile", self.cookies_profile.text().strip())
+        self.settings.setValue("cookies_json", self.cookies_json.text())
+        profile_id = self.cookies_json_profile.currentData()
+        self.settings.setValue("cookies_json_profile", profile_id or "")
         self.settings.setValue("cookies_curl", self.cookies_curl.toPlainText().strip())
         self.settings.setValue("tiktok_age_days", self.tiktok_age.currentData() or "")
         telegram_notify.save_state(

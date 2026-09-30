@@ -44,6 +44,7 @@ UNSUPPORTED_FEED = "unsupported_feed"
 
 UNSUPPORTED_FEED_MESSAGES = {
     "douyin": "Douyin feeds are not supported. Paste a video URL, a jingxuan link with modal_id, or a profile / sec_user_id.",
+    "tiktok": "Paste a TikTok video link or a creator profile (@name), not the site homepage.",
 }
 
 URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>'\"\]\[{}]+", re.IGNORECASE)
@@ -252,6 +253,8 @@ def _classify_tiktok(parts):
         return UNSUPPORTED_FEED
     if segments and segments[0].startswith("@"):
         return FEED
+    if not segments:
+        return UNSUPPORTED_FEED
     return SINGLE
 
 

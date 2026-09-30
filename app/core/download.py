@@ -32,9 +32,10 @@ DEFAULT_WORKERS = 4
 DEFAULT_FRAGMENTS = 8
 
 # Bilibili (and others) split video and audio; `best` is video-only there and fails.
-FORMAT_SELECTOR = "bv*+ba/b"
+# Bilibili and others may lack a merge pair; `/best` is the last resort.
+FORMAT_SELECTOR = "bv*+ba/b/best"
 # Twitter image tweets have no video+audio pair; keep merge first, then fall back.
-TWITTER_FORMAT_SELECTOR = "bv*+ba/b/best"
+TWITTER_FORMAT_SELECTOR = FORMAT_SELECTOR
 PINTEREST_FORMAT_SELECTOR = TWITTER_FORMAT_SELECTOR
 TWITTER_EXTRACTOR_ARGS = "twitter:api=syndication"
 _TWITTER_STATUS_RE = re.compile(r"(?:^|/)status(?:es)?/(\d+)", re.I)
@@ -133,12 +134,19 @@ def normalize_media_kinds(media_kinds=None):
     return frozenset(media_kinds)
 
 
+_PLACEHOLDER_FOLDER_NAMES = frozenset(
+    {"", "default", "video", "untitled", "na", "none"}
+)
+
+
 def source_folder_name(title="", description="", rid=""):
     """Windows-safe folder from caption, then title; else random hex (+ rid)."""
     text = collapse_text(description) or collapse_text(title)
     text = _WIN_ILLEGAL.sub(" ", text)
     text = collapse_text(text)
     text = text[:80].rstrip(" .")
+    if text.lower() in _PLACEHOLDER_FOLDER_NAMES:
+        text = ""
     if text:
         return text
     token = secrets.token_hex(4)
