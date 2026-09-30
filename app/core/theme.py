@@ -167,6 +167,14 @@ QPlainTextEdit {
     color: #3a3d42;
 }
 QLabel#grabberHint { color: #4b4f56; font-size: 12px; }
+QDockWidget { color: #1c1e21; }
+QDockWidget::title { background: #e9ebee; padding: 4px 8px; text-align: left; }
+QWidget#logBar { background: #e9ebee; border-bottom: 1px solid #dcdfe3; }
+QLabel#logTitle { color: #1c1e21; font-size: 12px; font-weight: 600; }
+QToolButton#logHeadBtn { background: transparent; border: 0; padding: 4px 8px; min-width: 16px; }
+QToolButton#logHeadBtn:hover { background: #d4d7dc; }
+QToolButton#logClose { background: transparent; border: 0; border-radius: 0; padding: 4px 12px; min-width: 16px; }
+QToolButton#logClose:hover { background: #e81123; }
 QWidget#emptyTable { background: transparent; }
 QLabel#emptyTableHint { color: #6b7078; font-size: 13px; }
 
@@ -381,6 +389,14 @@ QPlainTextEdit {
     color: #b8c4d4;
 }
 QLabel#grabberHint { color: #8c98a8; font-size: 12px; }
+QDockWidget { color: #e7ecf3; }
+QDockWidget::title { background: #141a23; padding: 4px 8px; text-align: left; }
+QWidget#logBar { background: #141a23; border-bottom: 1px solid #26303d; }
+QLabel#logTitle { color: #e7ecf3; font-size: 12px; font-weight: 600; }
+QToolButton#logHeadBtn { background: transparent; border: 0; padding: 4px 8px; min-width: 16px; }
+QToolButton#logHeadBtn:hover { background: #243044; }
+QToolButton#logClose { background: transparent; border: 0; border-radius: 0; padding: 4px 12px; min-width: 16px; }
+QToolButton#logClose:hover { background: #e81123; }
 QWidget#emptyTable { background: transparent; }
 QLabel#emptyTableHint { color: #8c98a8; font-size: 13px; }
 

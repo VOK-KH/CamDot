@@ -1,6 +1,7 @@
 """Centered overlay while Extract / Link Grabber syncs links into Grabber."""
 import os
 
+from app.core.i18n import tr
 from PySide6.QtCore import (
     Property,
     QEasingCurve,
@@ -209,10 +210,10 @@ class ExtractLoader(QFrame):
         head = QHBoxLayout()
         head.setSpacing(12)
         self.mascot = BottyClip()
-        self.title = QLabel("Extracting links")
+        self.title = QLabel(tr("Extracting links"))
         self.title.setObjectName("extractLoaderTitle")
         self.title.setWordWrap(True)
-        self.detail = QLabel("Looking for links…")
+        self.detail = QLabel(tr("Looking for links…"))
         self.detail.setObjectName("extractLoaderDetail")
         self.detail.setWordWrap(True)
         text = QVBoxLayout()
@@ -223,7 +224,7 @@ class ExtractLoader(QFrame):
         head.addLayout(text, 1)
         inner.addLayout(head)
 
-        self.count = QLabel("0 listed")
+        self.count = QLabel(tr("{n} listed").format(n=0))
         self.count.setObjectName("extractLoaderCount")
         inner.addWidget(self.count)
 
@@ -262,4 +263,4 @@ class ExtractLoader(QFrame):
         super().hideEvent(event)
 
     def set_count(self, listed):
-        self.count.setText(f"{listed} listed")
+        self.count.setText(tr("{n} listed").format(n=listed))

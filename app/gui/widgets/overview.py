@@ -1,4 +1,5 @@
 """The Overview strip above the bottom tools: the totals for the current tab."""
+from app.core.i18n import tr
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -32,7 +33,7 @@ class OverviewPanel(QWidget):
         head.setSpacing(5)
         glyph = QLabel()
         glyph.setProperty("iconName", "activity")
-        self.title = QLabel("Overview")
+        self.title = QLabel(tr("Overview"))
         self.title.setObjectName("overviewTitle")
         self.close_btn = QToolButton()
         self.close_btn.setObjectName("overviewClose")

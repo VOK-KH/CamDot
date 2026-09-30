@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QDialogButtonBox,
+    QDockWidget,
     QFormLayout,
     QHeaderView,
     QLabel,
@@ -199,6 +200,7 @@ class GuiSmoke(unittest.TestCase):
         settings.setValue("output_root", self.folder.name)
         settings.setValue("link_grabber", False)
         settings.setValue("close_to_tray", False)
+        settings.setValue("ui_language", "en")
         self._state_patch = patch("app.core.runtime.state_dir", return_value=self.state_folder.name)
         self._state_patch.start()
         self.window = MainWindow(settings=settings)
@@ -208,6 +210,8 @@ class GuiSmoke(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         QApplication.processEvents()
+        from app.core.i18n import apply_language
+        apply_language("en")
         self._state_patch.stop()
         self.folder.cleanup()
         self.state_folder.cleanup()
@@ -1171,12 +1175,45 @@ class GuiSmoke(unittest.TestCase):
             self.assertEqual(action.shortcut().toString(), keys, action.text())
 
     def test_view_menu_log_item_follows_the_log_panel(self):
-        visible = not self.window.log.isHidden()
+        visible = not self.window.log_dock.isHidden()
         self.window.act_log.trigger()
-        self.assertEqual(self.window.log.isHidden(), visible)
+        self.assertEqual(self.window.log_dock.isHidden(), visible)
         self.assertEqual(self.window.act_log.isChecked(), not visible)
         self.window._toggle_log()
         self.assertEqual(self.window.act_log.isChecked(), visible)
+
+    def test_log_docks_floats_and_writes_appdata(self):
+        dock = self.window.log_dock
+        self.assertTrue(
+            dock.features() & QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        self.assertTrue(
+            dock.features() & QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+        self.assertTrue(
+            dock.features() & QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        self.window._append_log("saved line")
+        self.assertIn("saved line", self.window.log.toPlainText())
+        folder = os.path.join(self.state_folder.name, "logs")
+        names = os.listdir(folder)
+        self.assertTrue(any(name.startswith("camdot-") and name.endswith(".log") for name in names))
+        with open(os.path.join(folder, names[0]), encoding="utf-8") as handle:
+            self.assertIn("saved line", handle.read())
+        export = os.path.join(self.folder.name, "export.txt")
+        self.window._write_log_export(export)
+        with open(export, encoding="utf-8") as handle:
+            self.assertIn("saved line", handle.read())
+        self.window._toggle_log_float()
+        self.assertTrue(dock.isFloating())
+        self.assertIs(dock.titleBarWidget(), self.window.log_panel.bar)
+        if CUSTOM_WINDOW_CHROME:
+            self.assertTrue(dock.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        self.window._toggle_log_float()
+        self.assertFalse(dock.isFloating())
+        self.window._close_log()
+        self.assertTrue(dock.isHidden())
+        self.assertFalse(self.window.act_log.isChecked())
 
     def test_tools_menu_owns_the_grabber_and_the_strip_reports_it(self):
         self.window._toggle_grabber(False)
@@ -1869,6 +1906,33 @@ class GuiSmoke(unittest.TestCase):
                     prompt_update=True, notify_uptodate=True
                 )
         uptodate.emit.assert_called_once()
+
+    def test_language_setting_translates_the_window_and_fonts_lead(self):
+        from PySide6.QtGui import QFontDatabase
+
+        self.window._settings.setValue("ui_language", "km")
+        self.window._settings.setValue("ui_fonts", "Khmer OS")
+        self.window._apply_locale()
+        self.assertEqual(self.window.tabs.tabText(0), "ទាញយក")
+        self.assertEqual(self.window.tabs.tabText(1), "ចាប់តំណ")
+        header = self.window.table.model().headerData(
+            COL_TITLE, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole,
+        )
+        self.assertEqual(header, "ឈ្មោះ")
+        families = list(QApplication.instance().font().families())
+        self.assertEqual(families[0], "Khmer OS")
+        system = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
+        if system and system != "Khmer OS":
+            self.assertIn(system, families)
+            self.assertLess(families.index("Khmer OS"), families.index(system))
+        self.window._settings.setValue("ui_language", "en")
+        self.window._settings.setValue("ui_fonts", "")
+        self.window._apply_locale()
+        self.assertEqual(self.window.tabs.tabText(0), "Download")
+        self.assertEqual(
+            QApplication.instance().font().family(),
+            QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family(),
+        )
 
 
 class ProgressDelegatePaint(unittest.TestCase):

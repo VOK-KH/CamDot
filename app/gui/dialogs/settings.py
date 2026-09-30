@@ -39,6 +39,7 @@ from app.core.download import (
     resolve_filename_template,
 )
 from app.core import icons
+from app.core.i18n import tr
 from app.core.cookies import list_cookie_profile_choices
 from app.core.platform_icons import host_color_icon
 from app.core.runtime import default_output_root, resolve_output_root
@@ -178,7 +179,7 @@ class SettingsDialog(QDialog):
         page = QWidget()
         form = QFormLayout(page)
         _compact_form(form)
-        self.tabs.addTab(page, title)
+        self.tabs.addTab(page, tr(title))
         return form
 
     def _build_general_tab(self):
@@ -347,7 +348,7 @@ class SettingsDialog(QDialog):
         col.addWidget(actions)
         col.addWidget(self.notify_status)
         self.notify_enabled.toggled.connect(self._sync_notify_widgets)
-        self.tabs.addTab(page, "Notifications")
+        self.tabs.addTab(page, tr("Notifications"))
         self._notify_rows = []
         self._notify_offset = 0
 
@@ -423,8 +424,24 @@ class SettingsDialog(QDialog):
         self.theme_style.setToolTip("Dark or light window chrome, tables, and toolbars.")
         self.primary = ColorField()
         self.primary.setToolTip("Accent for tabs, focus rings, and checked tools.")
-        look.addRow("Theme style", self.theme_style)
-        look.addRow("Primary color", self.primary)
+        self.ui_language = QComboBox()
+        self.ui_language.addItem(tr("Follow system"), "system")
+        self.ui_language.addItem("English", "en")
+        self.ui_language.addItem("ភាសាខ្មែរ", "km")
+        self.ui_language.setToolTip(
+            "Uses the Windows language unless you pick English or Khmer. "
+            "Tables update now. Menus update the next time CamDot starts."
+        )
+        self.ui_fonts = QLineEdit()
+        self.ui_fonts.setPlaceholderText("Khmer OS, Noto Sans Khmer")
+        self.ui_fonts.setToolTip(
+            "Extra font names, separated by commas. They are used before the "
+            "Windows font. Leave this empty to use the system font."
+        )
+        look.addRow(tr("Theme style"), self.theme_style)
+        look.addRow(tr("Primary color"), self.primary)
+        look.addRow(tr("Language"), self.ui_language)
+        look.addRow(tr("Extra fonts"), self.ui_fonts)
 
     def _build_cookies_tab(self):
         page = QWidget()
@@ -488,7 +505,7 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(curl_title)
         layout.addWidget(self.cookies_curl, 1)
-        self.tabs.addTab(page, "Cookies")
+        self.tabs.addTab(page, tr("Cookies"))
 
     def _refresh_cookie_profile_choices(self, keep_id=""):
         path = self.cookies_json.text().strip()
@@ -575,6 +592,9 @@ class SettingsDialog(QDialog):
         index = self.theme_style.findData(dark)
         self.theme_style.setCurrentIndex(max(index, 0))
         self.primary.set_hex(get("theme_primary", DEFAULT_PRIMARY, str))
+        lang = str(get("ui_language", "system", str) or "system")
+        self.ui_language.setCurrentIndex(max(self.ui_language.findData(lang), 0))
+        self.ui_fonts.setText(str(get("ui_fonts", "", str) or ""))
         self.show_log.setChecked(get("log_visible", False, bool))
         self.link_grabber.setChecked(get("link_grabber", True, bool))
         self.close_to_tray.setChecked(get("close_to_tray", True, bool))
@@ -614,6 +634,8 @@ class SettingsDialog(QDialog):
         self.fragments.setValue(DEFAULT_FRAGMENTS)
         self.theme_style.setCurrentIndex(max(self.theme_style.findData(DEFAULT_DARK), 0))
         self.primary.set_hex(DEFAULT_PRIMARY)
+        self.ui_language.setCurrentIndex(0)
+        self.ui_fonts.clear()
         self.show_log.setChecked(False)
         self.link_grabber.setChecked(True)
         self.close_to_tray.setChecked(True)
@@ -658,6 +680,8 @@ class SettingsDialog(QDialog):
         self.settings.setValue("fragments", self.fragments.value())
         self.settings.setValue("dark", bool(self.theme_style.currentData()))
         self.settings.setValue("theme_primary", self.primary.hex())
+        self.settings.setValue("ui_language", self.ui_language.currentData() or "system")
+        self.settings.setValue("ui_fonts", self.ui_fonts.text().strip())
         self.settings.setValue("log_visible", self.show_log.isChecked())
         self.settings.setValue("link_grabber", self.link_grabber.isChecked())
         self.settings.setValue("close_to_tray", self.close_to_tray.isChecked())

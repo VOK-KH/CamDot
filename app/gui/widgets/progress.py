@@ -9,10 +9,8 @@ from app.core.model import (
     PERCENT_ROLE,
     STATUS_COLORS,
     STATUS_COLORS_DARK,
-    STATUS_LABELS,
+    STATUS_KEY_ROLE,
 )
-
-_LABEL_TO_STATUS = {label: key for key, label in STATUS_LABELS.items()}
 _GROOVE_DARK = QColor("#243044")
 _GROOVE_LIGHT = QColor("#d5dbe3")
 _TEXT_LIGHT = QColor("#f4f7fb")
@@ -84,8 +82,8 @@ class ProgressDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _status_at(index):
-        label = index.sibling(index.row(), COL_STATUS).data(Qt.ItemDataRole.DisplayRole)
-        return _LABEL_TO_STATUS.get(label, "queued")
+        status = index.sibling(index.row(), COL_STATUS).data(STATUS_KEY_ROLE)
+        return status or "queued"
 
     @staticmethod
     def _fill_color(status, percent, dark):

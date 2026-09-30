@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import icons, platform_icons
+from app.core.i18n import tr
 from app.core.model import MEDIA_KINDS
 
 KIND_ICONS = {
@@ -72,12 +73,12 @@ class ViewsPanel(QFrame):
         column.setContentsMargins(8, 6, 6, 6)
         column.setSpacing(4)
 
-        title = QLabel("Views")
+        title = QLabel(tr("Views"))
         title.setObjectName("viewsTitle")
         column.addWidget(title)
 
         for key, label in MEDIA_KINDS:
-            box = QCheckBox(label)
+            box = QCheckBox(tr(label))
             box.setObjectName("viewsKind")
             box.setProperty("iconName", KIND_ICONS[key])
             box.setIconSize(KIND_ICON_SIZE)
@@ -86,7 +87,7 @@ class ViewsPanel(QFrame):
             self._kind_boxes[key] = box
             column.addWidget(box)
 
-        self.folder_group = QCheckBox("Folder group")
+        self.folder_group = QCheckBox(tr("Folder group"))
         self.folder_group.setObjectName("viewsFolderGroup")
         self.folder_group.setProperty("iconName", "folder")
         self.folder_group.setIconSize(KIND_ICON_SIZE)
@@ -103,7 +104,7 @@ class ViewsPanel(QFrame):
         divider.setFixedHeight(1)
         column.addWidget(divider)
 
-        hosts_title = QLabel("Host")
+        hosts_title = QLabel(tr("Host"))
         hosts_title.setObjectName("viewsTitle")
         column.addWidget(hosts_title)
 

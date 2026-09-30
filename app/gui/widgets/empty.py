@@ -21,11 +21,11 @@ class EmptyTableHint(QWidget):
         art.setObjectName("emptyTableArt")
         art.setAlignment(Qt.AlignmentFlag.AlignCenter)
         art.setPixmap(icons.art("empty", "list", 150))
-        caption = QLabel(message)
-        caption.setObjectName("emptyTableHint")
-        caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._caption = QLabel(message)
+        self._caption.setObjectName("emptyTableHint")
+        self._caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(art)
-        layout.addWidget(caption)
+        layout.addWidget(self._caption)
 
         table.viewport().installEventFilter(self)
         model = table.model()
@@ -35,6 +35,9 @@ class EmptyTableHint(QWidget):
             model.rowsInserted.connect(self.sync)
             model.rowsRemoved.connect(self.sync)
         self.sync()
+
+    def set_message(self, message):
+        self._caption.setText(message)
 
     def eventFilter(self, watched, event):
         if watched is self._table.viewport() and event.type() == QEvent.Type.Resize:

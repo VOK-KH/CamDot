@@ -157,6 +157,36 @@ def util_cache_dir():
     return os.path.join(state_dir(), "cache")
 
 
+def logs_dir():
+    """Folder for session log files under AppData."""
+    return os.path.join(state_dir(), "logs")
+
+
+def session_log_path(when=None):
+    """One log file per day: logs/camdot-YYYY-MM-DD.log."""
+    from datetime import datetime
+
+    moment = when or datetime.now()
+    return os.path.join(logs_dir(), f"camdot-{moment.strftime('%Y-%m-%d')}.log")
+
+
+def append_app_log(text, when=None):
+    """Append timestamped lines to today's log file. Returns the file path."""
+    from datetime import datetime
+
+    path = session_log_path(when)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    moment = when or datetime.now()
+    stamp = moment.strftime("%Y-%m-%d %H:%M:%S")
+    body = str(text).replace("\r\n", "\n").rstrip("\n")
+    if not body:
+        return path
+    with open(path, "a", encoding="utf-8") as handle:
+        for line in body.split("\n"):
+            handle.write(f"{stamp} {line}\n")
+    return path
+
+
 def _is_empty_dir(path):
     if not os.path.isdir(path):
         return True

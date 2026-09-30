@@ -94,6 +94,8 @@ class Model(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        from app.core.i18n import apply_language
+        apply_language("en")
         self.model = ReelModel()
         self.model.set_urls(URLS)
 
@@ -490,6 +492,8 @@ class Filtering(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        from app.core.i18n import apply_language
+        apply_language("en")
         self.model = ReelModel()
         self.model.set_urls(URLS)
         self.proxy = ReelFilterProxy()

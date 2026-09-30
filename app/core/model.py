@@ -9,6 +9,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyMod
 from PySide6.QtGui import QColor
 
 from app.core import icons, platform_icons, theme
+from app.core.i18n import tr
 from app.core.download import post_label, reel_id
 from app.core.urls import detect_platform
 
@@ -48,6 +49,7 @@ STATUS_COLORS_DARK = {
 PERCENT_ROLE = Qt.ItemDataRole.UserRole
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
 VARIANT_OPTIONS_ROLE = Qt.ItemDataRole.UserRole + 2
+STATUS_KEY_ROLE = Qt.ItemDataRole.UserRole + 3
 
 # (key, menu label, what the search box asks for) for the bottom bar filter.
 FILTER_FIELDS = (
@@ -288,17 +290,17 @@ def variant_label(reel):
     """Grabber child row: Video / Audio / Image: Best Quality Image."""
     kind = getattr(reel, "variant", "") or ""
     if kind == "video":
-        return "Video"
+        return tr("Video")
     if kind == "music":
-        return "Audio"
+        return tr("Audio")
     if kind == "image":
         wanted = getattr(reel, "image_quality", "") or "best"
         for key, label in IMAGE_QUALITIES:
             if key == wanted:
-                return f"Image: {label}"
-        return "Image: Best Quality Image"
+                return f"{tr('Image')}: {label}"
+        return f"{tr('Image')}: Best Quality Image"
     if kind == "document":
-        return "Document"
+        return tr("Document")
     return ""
 
 
@@ -438,7 +440,8 @@ class ReelModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return COLUMNS[section]
+            label = COLUMNS[section]
+            return tr(label) if label else label
         return None
 
     def flags(self, index):
@@ -464,7 +467,7 @@ class ReelModel(QAbstractTableModel):
             if column == COL_INDEX:
                 return str(index.row() + 1)
             if column == COL_STATUS:
-                return STATUS_LABELS[reel.status]
+                return tr(STATUS_LABELS[reel.status])
             if column == COL_ID:
                 return reel.rid
             if column == COL_TITLE:
@@ -491,6 +494,8 @@ class ReelModel(QAbstractTableModel):
 
         if role == PERCENT_ROLE and column == COL_PROGRESS:
             return self._display_percent(reel)
+        if role == STATUS_KEY_ROLE and column == COL_STATUS:
+            return reel.status
         if role == VARIANT_OPTIONS_ROLE and column == COL_VARIANT and reel.variant == "image":
             return [label for _key, label in IMAGE_QUALITIES]
         if role == Qt.ItemDataRole.DecorationRole and column == COL_ICON:

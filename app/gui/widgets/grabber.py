@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import icons
+from app.core.i18n import tr
 from app.gui.constants import FLOAT_MARGIN
 
 SLIDE_MS = 280
@@ -89,11 +90,11 @@ class GrabberPanel(QFrame):
         row = QHBoxLayout(head)
         row.setContentsMargins(6, 2, 3, 2)
         row.setSpacing(4)
-        title = QLabel("Parse Clipboard")
+        title = QLabel(tr("Parse Clipboard"))
         title.setObjectName("grabberTitle")
-        self.pin_btn = self._head_button("pinned", "Keep this panel open", checkable=True)
+        self.pin_btn = self._head_button("pinned", tr("Keep this panel open"), checkable=True)
         self.pin_btn.toggled.connect(self._sync_pin)
-        self.close_btn = self._head_button("close", "Hide this panel")
+        self.close_btn = self._head_button("close", tr("Hide this panel"))
         self.close_btn.clicked.connect(self.hide)
         row.addWidget(title)
         row.addStretch(1)
@@ -116,7 +117,7 @@ class GrabberPanel(QFrame):
         grid.setColumnMinimumWidth(0, 32)
 
         for row, (name, artwork) in enumerate(self.FIELDS):
-            label = QLabel(f"{name}:")
+            label = QLabel(f"{tr(name)}:")
             label.setObjectName("grabberName")
             label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             glyph = QLabel()

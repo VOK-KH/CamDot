@@ -11,6 +11,18 @@ from PySide6.QtWidgets import (
 from app.core.model import IMAGE_QUALITIES, VARIANT_OPTIONS_ROLE
 
 
+class TextRowDelegate(QStyledItemDelegate):
+    """Default cell painter. Rows stay tall enough for Khmer vowel signs."""
+
+    MIN_HEIGHT = 28
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        if hint.height() < self.MIN_HEIGHT:
+            hint.setHeight(self.MIN_HEIGHT)
+        return hint
+
+
 class VariantDelegate(QStyledItemDelegate):
     """Variant cell with a drop-down for image quality on Grabber rows."""
 

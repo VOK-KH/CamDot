@@ -16,6 +16,10 @@ class GrabberNotifications(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def tearDown(self):
+        from app.core.i18n import apply_language
+        apply_language("en")
+
     def test_offscreen_tests_keep_the_floating_monitor(self):
         self.assertFalse(use_grabber_notifications())
 

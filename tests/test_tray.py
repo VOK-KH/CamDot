@@ -50,6 +50,7 @@ class TrayTests(unittest.TestCase):
         settings.setValue("output_root", self.folder.name)
         settings.setValue("link_grabber", False)
         settings.setValue("close_to_tray", True)
+        settings.setValue("ui_language", "en")
         self._state_patch = patch(
             "app.core.runtime.state_dir", return_value=self.state_folder.name
         )

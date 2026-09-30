@@ -22,7 +22,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction,
     QDesktopServices,
-    QFont,
     QGuiApplication,
     QKeySequence,
     QMouseEvent,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -44,7 +44,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMenuBar,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -94,9 +93,10 @@ from app.gui.instance import InstanceGuard
 from app.gui.jobs import JobWorker
 from app.gui.widgets.empty import EmptyTableHint
 from app.gui.widgets.header import CheckHeaderView
+from app.gui.widgets.log_panel import LogPanel
 from app.gui.widgets.overview import OverviewPanel
 from app.gui.widgets.properties import PropertiesPanel
-from app.gui.widgets.delegates import HosterDelegate, VariantDelegate
+from app.gui.widgets.delegates import HosterDelegate, TextRowDelegate, VariantDelegate
 from app.gui.widgets.progress import ProgressDelegate
 from app.gui.widgets.reel_tree import ReelTreeProxy
 from app.core.model import (
@@ -123,11 +123,14 @@ from app.core.model import (
     primary_output_files,
 )
 from app import __version__
-from app.core.fonts import setup_app_font
+from app.core.fonts import parse_families, setup_app_font, ui_font
+from app.core.i18n import apply_language, tr
 from app.core.runtime import (
     APP_NAME,
+    append_app_log,
     collect_csv_path,
     gui_settings,
+    logs_dir,
     quiet_qt_logs,
     resolve_output_root,
     runtime_versions,
@@ -198,6 +201,7 @@ class MainWindow(QMainWindow):
         self._dark = dark
         self._primary = theme.DEFAULT_PRIMARY
         self._settings = settings or gui_settings()
+        self._apply_locale()
         self._columns_locked = self._settings.value("columns_locked", False, bool)
         self._h_scrollbar = False
         self.grab_add_at_top = False
@@ -226,18 +230,16 @@ class MainWindow(QMainWindow):
         self.splitter.setObjectName("mainSplit")
         self.splitter.setHandleWidth(6)
         self.splitter.addWidget(self._build_pages())
-        self.splitter.addWidget(self._build_log())
         self.splitter.addWidget(self._build_overview())
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, True)
-        self.splitter.setCollapsible(2, True)
         self.splitter.setStretchFactor(0, 8)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([520, 90, 72])
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([560, 72])
         self.splitter.splitterMoved.connect(self._clamp_overview_size)
         outer.addWidget(self._build_toolbar())
         outer.addWidget(self.splitter, 1)
+        self._build_log()
         outer.addWidget(self._build_properties())
         outer.addWidget(self._build_action_bar())
         self._on_page_changed(self.tabs.currentIndex())
@@ -298,8 +300,8 @@ class MainWindow(QMainWindow):
         """Download is the queue; Grabber extracts URLs into its own table first."""
         self.tabs = QTabWidget()
         self.tabs.setObjectName("workTabs")
-        self.tabs.addTab(self._build_download_page(), "Download")
-        self.tabs.addTab(self._build_grabber_page(), "Grabber")
+        self.tabs.addTab(self._build_download_page(), tr("Download"))
+        self.tabs.addTab(self._build_grabber_page(), tr("Grabber"))
         self.tabs.currentChanged.connect(self._on_page_changed)
         self.views = ViewsPanel(self)
         self.views.filter_changed.connect(self._persist_views_kinds)
@@ -453,18 +455,31 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------------- frameless
 
-    def _resize_edges(self, pos):
+    def _frame_host(self, watched):
+        """The frameless window this event belongs to, if we draw its edges."""
+        if not isinstance(watched, QWidget):
+            return None
+        window = watched.window()
+        if window is self:
+            return self
+        dock = getattr(self, "log_dock", None)
+        if dock is not None and window is dock and dock.isFloating():
+            return dock
+        return None
+
+    def _resize_edges(self, pos, widget=None):
         """Which window edges `pos` grabs, if any."""
-        if self.isMaximized():
+        widget = widget or self
+        if widget.isMaximized():
             return Qt.Edge(0)
         edges = Qt.Edge(0)
         if pos.x() < FRAME_MARGIN:
             edges |= Qt.Edge.LeftEdge
-        elif pos.x() >= self.width() - FRAME_MARGIN:
+        elif pos.x() >= widget.width() - FRAME_MARGIN:
             edges |= Qt.Edge.RightEdge
         if pos.y() < FRAME_MARGIN:
             edges |= Qt.Edge.TopEdge
-        elif pos.y() >= self.height() - FRAME_MARGIN:
+        elif pos.y() >= widget.height() - FRAME_MARGIN:
             edges |= Qt.Edge.BottomEdge
         return edges
 
@@ -474,11 +489,12 @@ class MainWindow(QMainWindow):
         The panels reach the window edge, so those presses land on them; this
         band stands in for the border the system would otherwise draw.
         """
-        if not isinstance(event, QMouseEvent) or not isinstance(watched, QWidget):
+        if not isinstance(event, QMouseEvent):
             return Qt.Edge(0)
-        if watched.window() is not self:       # dialogs keep their own edges
+        host = self._frame_host(watched)
+        if host is None:
             return Qt.Edge(0)
-        return self._resize_edges(self.mapFromGlobal(event.globalPosition().toPoint()))
+        return self._resize_edges(host.mapFromGlobal(event.globalPosition().toPoint()), host)
 
     def _set_frame_cursor(self, shape):
         """Show the resize cursor over the band without touching child cursors."""
@@ -505,8 +521,12 @@ class MainWindow(QMainWindow):
             return False
         if not edges or event.button() != Qt.MouseButton.LeftButton:
             return False
+        host = self._frame_host(watched)
+        handle = host.windowHandle() if host is not None else None
+        if handle is None:
+            return False
         self._set_frame_cursor(None)
-        self.windowHandle().startSystemResize(edges)
+        handle.startSystemResize(edges)
         return True
 
     def eventFilter(self, watched, event):
@@ -601,6 +621,7 @@ class MainWindow(QMainWindow):
 
         table = QTreeView()
         table.setModel(tree)
+        table.setItemDelegate(TextRowDelegate(table))
         table.setItemDelegateForColumn(COL_PROGRESS, ProgressDelegate(table))
         table.setItemDelegateForColumn(COL_HOST, HosterDelegate(table))
         variant_delegate = VariantDelegate(table)
@@ -636,7 +657,7 @@ class MainWindow(QMainWindow):
         table.selectionModel().selectionChanged.connect(self._fill_properties)
         table.setSortingEnabled(False)
         self._reset_columns(table, hidden)
-        table.empty_hint = EmptyTableHint(table, empty_message)
+        table.empty_hint = EmptyTableHint(table, tr(empty_message))
         return table
 
     def _on_variant_quality_chosen(self, index, quality):
@@ -715,21 +736,21 @@ class MainWindow(QMainWindow):
         for column in sorted(range(len(COLUMNS)), key=header.visualIndex):
             if column in PINNED_COLUMNS:
                 continue
-            action = menu.addAction(COLUMNS[column])
+            action = menu.addAction(tr(COLUMNS[column]))
             action.setCheckable(True)
             action.setChecked(not table.isColumnHidden(column))
             handlers[action] = lambda checked, c=column: self._toggle_column(c, checked)
         menu.addSeparator()
         color = self._icon_color()
-        fit = menu.addAction(icons.icon("select-all", color), "Fit columns to content")
+        fit = menu.addAction(icons.icon("select-all", color), tr("Fit columns to content"))
         handlers[fit] = lambda checked: table.resizeColumnsToContents()
-        reset = menu.addAction(icons.icon("refresh", color), "Reset columns")
+        reset = menu.addAction(icons.icon("refresh", color), tr("Reset columns"))
         handlers[reset] = lambda checked: self._reset_columns(table)
-        lock = menu.addAction("Lock column layout")
+        lock = menu.addAction(tr("Lock column layout"))
         lock.setCheckable(True)
         lock.setChecked(self._columns_locked)
         handlers[lock] = self._set_columns_locked
-        scroll = menu.addAction("Horizontal scrollbar")
+        scroll = menu.addAction(tr("Horizontal scrollbar"))
         scroll.setCheckable(True)
         scroll.setChecked(self._h_scrollbar)
         handlers[scroll] = self._set_h_scrollbar
@@ -742,18 +763,33 @@ class MainWindow(QMainWindow):
             handlers[chosen](chosen.isChecked())
 
     def _build_log(self):
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(4000)   # bounded, so long runs stay responsive
-        from PySide6.QtGui import QFontDatabase
-
-        mono = QFont("Consolas")
-        if "Consolas" not in QFontDatabase.families():
-            mono.setFamily(self.font().family())
-        mono.setStyleHint(QFont.StyleHint.Monospace)
-        mono.setPointSize(9)
-        self.log.setFont(mono)
-        return self.log
+        """Dockable log: drag to split, float to a window, or close. Drag back to dock."""
+        self.log_panel = LogPanel(self)
+        self.log = self.log_panel.view
+        self.log_panel.float_requested.connect(self._toggle_log_float)
+        self.log_panel.export_requested.connect(self._export_log)
+        self.log_panel.folder_requested.connect(self._open_logs_folder)
+        self.log_panel.close_requested.connect(self._close_log)
+        dock = QDockWidget("Log", self)
+        dock.setObjectName("logDock")
+        dock.setWidget(self.log_panel)
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.TopDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+        dock.setTitleBarWidget(self.log_panel.bar)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        dock.topLevelChanged.connect(self._on_log_float_changed)
+        dock.visibilityChanged.connect(lambda _visible: self._sync_menu_state())
+        self.log_dock = dock
+        return dock
 
     def _build_overview(self):
         """Totals for the tab you are on, over the bottom tools."""
@@ -768,15 +804,15 @@ class MainWindow(QMainWindow):
         if self.overview.isHidden():
             return
         sizes = self.splitter.sizes()
-        if len(sizes) < 3:
+        if len(sizes) < 2:
             return
         cap = self.overview.maximumHeight()
         floor = self.overview.minimumHeight()
-        ov = sizes[2]
+        ov = sizes[-1]
         if floor <= ov <= cap:
             return
         extra = ov - cap if ov > cap else ov - floor
-        sizes[2] = cap if ov > cap else floor
+        sizes[-1] = cap if ov > cap else floor
         sizes[0] = max(0, sizes[0] + extra)
         self.splitter.blockSignals(True)
         self.splitter.setSizes(sizes)
@@ -787,28 +823,28 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "overview") or self.overview.isHidden():
             return
         if self.tabs.currentIndex() == TAB_GRABBER:
-            self.overview.show_readings("Grabber Overview", self._grabber_readings())
+            self.overview.show_readings(tr("Grabber Overview"), self._grabber_readings())
         else:
-            self.overview.show_readings("Download Overview", self._download_readings())
+            self.overview.show_readings(tr("Download Overview"), self._download_readings())
 
     def _download_readings(self):
         data = self.model.overview()
         counts = data["counts"]
         return (
-            ("Links", str(data["links"])),
-            ("Done", str(counts.get("done", 0))),
-            ("Speed", f"{sysinfo.human_bytes(data['speed'])}/s"),
-            ("Left", sysinfo.human_bytes(data["bytes_left"])),
-            ("ETA", format_eta(data["eta"]) if data["eta"] else "-"),
+            (tr("Links"), str(data["links"])),
+            (tr("Done"), str(counts.get("done", 0))),
+            (tr("Speed"), f"{sysinfo.human_bytes(data['speed'])}/s"),
+            (tr("Left"), sysinfo.human_bytes(data["bytes_left"])),
+            (tr("ETA"), format_eta(data["eta"]) if data["eta"] else "-"),
         )
 
     def _grabber_readings(self):
         data = self.grab_model.overview()
         return (
-            ("Links", str(data["links"])),
-            ("Checked", str(data["checked"])),
-            ("Known", str(data["sized"])),
-            ("Unknown", str(data["unsized"])),
+            (tr("Links"), str(data["links"])),
+            (tr("Checked"), str(data["checked"])),
+            (tr("Known"), str(data["sized"])),
+            (tr("Unknown"), str(data["unsized"])),
         )
 
     def _toggle_overview(self):
@@ -1076,7 +1112,7 @@ class MainWindow(QMainWindow):
             ("link", "Add links from the clipboard", self._add_from_clipboard),
             ("folder", "Open download folder", self._open_folder),
         ):
-            action = menu.addAction(text)
+            action = menu.addAction(tr(text))
             action.setProperty("iconName", icon_name)
             action.triggered.connect(slot)
         return menu
@@ -1089,7 +1125,7 @@ class MainWindow(QMainWindow):
             ("select-all", "Start checked only", self._start_download),
             ("cancel", "Cancel job", self._cancel),
         ):
-            action = menu.addAction(text)
+            action = menu.addAction(tr(text))
             action.setProperty("iconName", icon_name)
             action.triggered.connect(lambda _checked=False, run=slot: run())
         return menu
@@ -1109,11 +1145,11 @@ class MainWindow(QMainWindow):
         else:
             self._add_grabber_option_actions(menu)
         menu.addSeparator()
-        props = menu.addAction("Package or Link Properties")
+        props = menu.addAction(tr("Package or Link Properties"))
         props.setCheckable(True)
         props.setChecked(not self.properties.isHidden())
         props.toggled.connect(self._toggle_properties)
-        overview = menu.addAction("Overview Panel visible")
+        overview = menu.addAction(tr("Overview Panel visible"))
         overview.setCheckable(True)
         overview.setChecked(not self.overview.isHidden())
         overview.toggled.connect(lambda checked: (
@@ -1125,11 +1161,11 @@ class MainWindow(QMainWindow):
             self._sync_menu_state(),
         ))
         if not on_download:
-            sidebar = menu.addAction("Sidebar visible")
+            sidebar = menu.addAction(tr("Sidebar visible"))
             sidebar.setCheckable(True)
             sidebar.setChecked(hasattr(self, "views") and not self.views.isHidden())
             sidebar.toggled.connect(self._set_sidebar_visible)
-            customize = menu.addAction("Customize this Bottom Panel")
+            customize = menu.addAction(tr("Customize this Bottom Panel"))
             customize.triggered.connect(self._open_settings)
 
     def _add_grabber_option_actions(self, menu):
@@ -1139,15 +1175,15 @@ class MainWindow(QMainWindow):
         self._context_action(
             menu, "Start all Downloads", self._start_all_downloads, "play")
         menu.addSeparator()
-        top = menu.addAction("Add at top")
+        top = menu.addAction(tr("Add at top"))
         top.setCheckable(True)
         top.setChecked(self.grab_add_at_top)
         top.toggled.connect(self._set_grab_add_at_top)
-        confirm = menu.addAction("Auto confirm")
+        confirm = menu.addAction(tr("Auto confirm"))
         confirm.setCheckable(True)
         confirm.setChecked(self.grab_auto_confirm)
         confirm.toggled.connect(self._set_grab_auto_confirm)
-        start = menu.addAction("Autostart Download")
+        start = menu.addAction(tr("Autostart Download"))
         start.setCheckable(True)
         start.setChecked(self.grab_autostart)
         start.toggled.connect(self._set_grab_autostart)
@@ -1171,7 +1207,7 @@ class MainWindow(QMainWindow):
         workers.valueChanged.connect(lambda value: self._settings.setValue("workers", value))
         self._add_menu_labeled_widget(menu, "Max simultaneous downloads", workers)
 
-        limit_on = QCheckBox("Speed limit")
+        limit_on = QCheckBox(tr("Speed limit"))
         limit_on.setChecked(get("speed_limit_on", False, bool))
         rate = QLineEdit()
         rate.setPlaceholderText("50K")
@@ -1201,7 +1237,7 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(8, 2, 8, 2)
         layout.setSpacing(6)
-        caption = QLabel(label)
+        caption = QLabel(tr(label))
         layout.addWidget(caption, 1)
         layout.addWidget(widget)
         action = QWidgetAction(menu)
@@ -1221,28 +1257,28 @@ class MainWindow(QMainWindow):
         self._settings.setValue("grab_autostart", self.grab_autostart)
 
     def _other_grabber_menu(self):
-        menu = QMenu("Other", self)
-        top = menu.addAction("Add at top")
+        menu = QMenu(tr("Other"), self)
+        top = menu.addAction(tr("Add at top"))
         top.setCheckable(True)
         top.setChecked(self.grab_add_at_top)
         top.toggled.connect(self._set_grab_add_at_top)
-        confirm = menu.addAction("Auto confirm")
+        confirm = menu.addAction(tr("Auto confirm"))
         confirm.setCheckable(True)
         confirm.setChecked(self.grab_auto_confirm)
         confirm.toggled.connect(self._set_grab_auto_confirm)
-        start = menu.addAction("Autostart Download")
+        start = menu.addAction(tr("Autostart Download"))
         start.setCheckable(True)
         start.setChecked(self.grab_autostart)
         start.toggled.connect(self._set_grab_autostart)
         menu.addSeparator()
-        expand = menu.addAction("Expand all packages")
+        expand = menu.addAction(tr("Expand all packages"))
         expand.triggered.connect(lambda _=False: self._set_grab_packages_expanded(True))
-        collapse = menu.addAction("Collapse all packages")
+        collapse = menu.addAction(tr("Collapse all packages"))
         collapse.triggered.connect(lambda _=False: self._set_grab_packages_expanded(False))
         return menu
 
     def _cleanup_menu(self, table=None):
-        menu = QMenu("Clean Up...", self)
+        menu = QMenu(tr("Clean Up..."), self)
         if table is getattr(self, "grab_table", None):
             model = self.grab_model
         elif table is getattr(self, "table", None):
@@ -1254,10 +1290,10 @@ class MainWindow(QMainWindow):
             and table.selectionModel()
             and table.selectionModel().selectedRows()
         )
-        act_sel = menu.addAction("Delete selected links")
+        act_sel = menu.addAction(tr("Delete selected links"))
         act_sel.setEnabled(selected)
         act_sel.triggered.connect(lambda _=False: self._cleanup_links(True))
-        act_all = menu.addAction("Delete all links")
+        act_all = menu.addAction(tr("Delete all links"))
         act_all.setEnabled(model.rowCount() > 0)
         act_all.triggered.connect(lambda _=False: self._cleanup_links(False))
         return menu
@@ -1459,26 +1495,29 @@ class MainWindow(QMainWindow):
     def _grabber_stats(self):
         """(label, tooltip) for the clipboard watcher, which has no button now."""
         if self.act_grabber.isChecked():
-            return "Grabber on", "Collecting supported links you copy (Ctrl+G)"
-        return "Grabber off", "Not watching the clipboard (Ctrl+G)"
+            return tr("Grabber on"), "Collecting supported links you copy (Ctrl+G)"
+        return tr("Grabber off"), "Not watching the clipboard (Ctrl+G)"
 
     def _job_stats(self):
         """(label, tooltip) for the work this window is running right now."""
         active, speed = self.model.active()
         counts = self.model.counts()
         tooltip = ", ".join(
-            f"{STATUS_LABELS[s]}: {counts.get(s, 0)}" for s in STATUSES
+            f"{tr(STATUS_LABELS[s])}: {counts.get(s, 0)}" for s in STATUSES
         )
         if active:
-            return f"{active} downloading · {sysinfo.human_bytes(speed)}/s", tooltip
+            return (
+                f"{active} {tr('downloading')} · {sysinfo.human_bytes(speed)}/s",
+                tooltip,
+            )
         if self._thread is None:
-            return "Idle", tooltip
+            return tr("Idle"), tooltip
         if self._grabber_job:
-            return "Link Grabber…", tooltip
-        return ("Extracting…" if self._collecting else "Working…"), tooltip
+            return tr("Link Grabber…"), tooltip
+        return (tr("Extracting…") if self._collecting else tr("Working…")), tooltip
 
     def _action(self, menu, text, slot, shortcut=None, icon="", checkable=False):
-        action = QAction(text, self)
+        action = QAction(tr(text), self)
         if icon:
             action.setProperty("iconName", icon)
         if shortcut is not None:
@@ -1519,7 +1558,7 @@ class MainWindow(QMainWindow):
             self.win_controls = None
             self._embed_toolbar_logo()
 
-        file_menu = bar.addMenu("&File")
+        file_menu = bar.addMenu(tr("&File"))
         self.act_collect = self._action(
             file_menu, "&Extract list", self._start_collect,
             QKeySequence.StandardKey.Refresh, "collect")
@@ -1544,7 +1583,7 @@ class MainWindow(QMainWindow):
         self.act_exit = self._action(
             file_menu, "E&xit", self._quit_application, "Ctrl+Q")
 
-        edit_menu = bar.addMenu("&Edit")
+        edit_menu = bar.addMenu(tr("&Edit"))
         self._action(
             edit_menu, "Select &all", self._select_all,
             QKeySequence.StandardKey.SelectAll, "select-all")
@@ -1563,7 +1602,7 @@ class MainWindow(QMainWindow):
         self._action(edit_menu, "Move &up", lambda _=False: self._move_selected(-1), None, "move-up")
         self._action(edit_menu, "Move &down", lambda _=False: self._move_selected(1), None, "move-down")
 
-        view_menu = bar.addMenu("&View")
+        view_menu = bar.addMenu(tr("&View"))
         self.act_log = self._action(
             view_menu, "Show &log", self._toggle_log, "Ctrl+L", "log", checkable=True)
         self.act_status = self._action(
@@ -1586,7 +1625,7 @@ class MainWindow(QMainWindow):
             view_menu, "Loc&k column layout", self._set_columns_locked, checkable=True)
         self._action(view_menu, "Reset col&umns", lambda _=False: self._reset_columns())
 
-        tools_menu = bar.addMenu("&Tools")
+        tools_menu = bar.addMenu(tr("&Tools"))
         self.act_grabber = self._action(
             tools_menu, "Link &Grabber", self._toggle_grabber, "Ctrl+G", "link",
             checkable=True)
@@ -1597,7 +1636,7 @@ class MainWindow(QMainWindow):
         self._action(tools_menu, "Check for app &updates", self._check_app_updates)
         self._action(tools_menu, "Open app &data folder", self._open_state_folder)
 
-        help_menu = bar.addMenu("&Help")
+        help_menu = bar.addMenu(tr("&Help"))
         self._action(help_menu, "&Supported sites", self._show_supported_sites)
         self._action(help_menu, "Send &feedback…", self._send_feedback)
         self._action(help_menu, "&About", self._show_about)
@@ -1608,7 +1647,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "act_log"):
             return
         for action, checked in (
-            (self.act_log, not self.log.isHidden()),
+            (self.act_log, not self.log_dock.isHidden()),
             (self.act_status, not self.statusBar().isHidden()),
             (self.act_overview, not self.overview.isHidden()),
             (self.act_properties, not self.properties.isHidden()),
@@ -1879,7 +1918,7 @@ class MainWindow(QMainWindow):
     def _icon_button(self, name, tooltip, slot):
         button = QToolButton()
         button.setProperty("iconName", name)
-        button.setToolTip(tooltip)
+        button.setToolTip(tr(tooltip))
         button.clicked.connect(slot)
         return button
 
@@ -1891,7 +1930,7 @@ class MainWindow(QMainWindow):
         return button
 
     def _pill(self, text, name, slot):
-        button = QPushButton(text)
+        button = QPushButton(tr(text))
         button.setProperty("iconName", name)
         button.setProperty("pill", True)
         button.clicked.connect(slot)
@@ -1900,7 +1939,7 @@ class MainWindow(QMainWindow):
     def _bar_pill(self, text, name, slot, menu=None):
         """A labelled bottom-bar button; with `menu` it splits into button + arrow."""
         button = QToolButton()
-        button.setText(text)
+        button.setText(tr(text))
         button.setProperty("iconName", name)
         button.setProperty("pill", True)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -2024,7 +2063,9 @@ class MainWindow(QMainWindow):
             self._update_counter()
             self._append_log(f"Grabber listed {added} item(s).")
         elif added_rows and light and self.tabs.currentIndex() == TAB_GRABBER:
-            self.counter.setText(f"{self.grab_model.package_count()} listed")
+            self.counter.setText(
+                tr("{n} listed").format(n=self.grab_model.package_count())
+            )
         return added
 
     def _set_grab_packages_expanded(self, expanded):
@@ -2165,10 +2206,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "tabs") and self.tabs.currentIndex() == TAB_GRABBER:
             total = self.grab_model.package_count()
             if self._collecting:
-                self.counter.setText(f"{total} listed")
+                self.counter.setText(tr("{n} listed").format(n=total))
                 self.counter.setToolTip("Links extracted so far into Grabber")
             else:
-                self.counter.setText(f"{total} ready")
+                self.counter.setText(tr("{n} ready").format(n=total))
                 self.counter.setToolTip("Items waiting to be added to Download")
             return
         counts = self.model.counts()
@@ -2176,7 +2217,7 @@ class MainWindow(QMainWindow):
         failed = counts.get("failed", 0) + counts.get("cancelled", 0)
         self.counter.setText(f"{total} ● {failed}")
         self.counter.setToolTip(
-            ", ".join(f"{STATUS_LABELS[s]}: {counts.get(s, 0)}" for s in STATUSES)
+            ", ".join(f"{tr(STATUS_LABELS[s])}: {counts.get(s, 0)}" for s in STATUSES)
         )
         self._refresh_download_label()
 
@@ -2184,9 +2225,9 @@ class MainWindow(QMainWindow):
         done = self.model.counts().get("done", 0)
         pending = self.model.rowCount() - done
         if done and pending > 0:
-            self.download_btn.setText("Continue Downloads")
+            self.download_btn.setText(tr("Continue Downloads"))
         else:
-            self.download_btn.setText("Start all Downloads")
+            self.download_btn.setText(tr("Start all Downloads"))
 
     @Slot(str, dict)
     def _on_progress(self, url, event):
@@ -2237,7 +2278,8 @@ class MainWindow(QMainWindow):
 
     def _context_action(self, menu, text, slot, icon=""):
         color = self._icon_color()
-        action = menu.addAction(icons.icon(icon, color), text) if icon else menu.addAction(text)
+        label = tr(text)
+        action = menu.addAction(icons.icon(icon, color), label) if icon else menu.addAction(label)
         if icon:
             action.setProperty("iconName", icon)
         action.triggered.connect(slot)
@@ -2337,7 +2379,7 @@ class MainWindow(QMainWindow):
         return menu
 
     def _properties_menu(self):
-        menu = QMenu("Properties", self)
+        menu = QMenu(tr("Properties"), self)
         self._context_action(menu, "Rename…", self._rename_selected)
         self._context_action(
             menu, "Set download directory…", self._set_download_directory, "folder")
@@ -2348,12 +2390,12 @@ class MainWindow(QMainWindow):
         return menu
 
     def _variant_menu(self):
-        menu = QMenu("Change Variant", self)
-        add = menu.addAction("Add additional variants")
+        menu = QMenu(tr("Change Variant"), self)
+        add = menu.addAction(tr("Add additional variants"))
         add.triggered.connect(self._add_missing_variants)
         menu.addSeparator()
         for key, label in IMAGE_QUALITIES:
-            action = menu.addAction(f"Image: {label}")
+            action = menu.addAction(f"{tr('Image')}: {label}")
             action.triggered.connect(
                 lambda _checked=False, quality=key: self._set_image_quality(quality)
             )
@@ -2572,6 +2614,78 @@ class MainWindow(QMainWindow):
     def _append_log(self, text):
         self.log.appendPlainText(text)
         self.log.moveCursor(QTextCursor.MoveOperation.End)
+        try:
+            append_app_log(text)
+        except OSError:
+            pass
+
+    def _export_log(self):
+        folder = logs_dir()
+        os.makedirs(folder, exist_ok=True)
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Export log",
+            os.path.join(folder, "camdot-log.txt"),
+            "Log files (*.txt *.log);;All files (*.*)",
+        )
+        if not path:
+            return
+        self._write_log_export(path)
+        self._append_log(f"Exported log to {path}")
+
+    def _write_log_export(self, path):
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self.log.toPlainText())
+        return path
+
+    def _open_logs_folder(self):
+        folder = logs_dir()
+        os.makedirs(folder, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _close_log(self):
+        self.log_dock.hide()
+        self._sync_menu_state()
+
+    def _toggle_log_float(self):
+        dock = self.log_dock
+        if dock.isHidden():
+            dock.show()
+        if dock.isFloating():
+            self._set_log_frameless(False)
+            dock.setFloating(False)
+        else:
+            dock.setFloating(True)
+            if dock.isFloating():
+                dock.resize(680, 380)
+                dock.raise_()
+        self._on_log_float_changed(dock.isFloating())
+
+    def _set_log_frameless(self, frameless):
+        """Drop the system title bar while the log is its own window."""
+        if not self._custom_chrome:
+            return
+        dock = self.log_dock
+        flag = Qt.WindowType.FramelessWindowHint
+        enabled = bool(dock.windowFlags() & flag)
+        if enabled == bool(frameless):
+            return
+        dock.setWindowFlag(flag, bool(frameless))
+        if frameless and dock.isFloating():
+            dock.show()
+
+    def _on_log_float_changed(self, floating):
+        floating = bool(floating)
+        self.log_panel.set_floating(floating)
+        if floating:
+            self._set_log_frameless(True)
+        if hasattr(self, "_icon_color"):
+            button = self.log_panel.float_btn
+            name = button.property("iconName")
+            if name:
+                button.setIcon(icons.icon(name, self._icon_color()))
+        self._sync_menu_state()
 
     def _channel(self):
         preferred = self._settings.value("channel", "", str)
@@ -2634,7 +2748,9 @@ class MainWindow(QMainWindow):
 
     def _toggle_log(self):
         # isHidden(), not isVisible(): the panel keeps its state before show().
-        self.log.setVisible(self.log.isHidden())
+        self.log_dock.setVisible(self.log_dock.isHidden())
+        if self.log_dock.isVisible() and self.log_dock.isFloating():
+            self.log_dock.raise_()
         self._sync_menu_state()
 
     def _toggle_status(self):
@@ -2769,13 +2885,16 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(TAB_GRABBER)
         if waiting_login:
             title, detail = (
-                "Waiting for login",
-                "Log in in Chrome, then click Continue login.",
+                tr("Waiting for login"),
+                tr("Log in in Chrome, then click Continue login."),
             )
         else:
             title, detail = self._extract_status_text()
+            title, detail = tr(title), tr(detail)
         listed = self.grab_model.package_count()
-        count = f"{listed} listed" if listed else "Looking for links…"
+        count = (
+            tr("{n} listed").format(n=listed) if listed else tr("Looking for links…")
+        )
         loader.show_busy(title, detail, count)
         self._place_extract_loader()
 
@@ -2885,6 +3004,7 @@ class MainWindow(QMainWindow):
             self._sync_app_update_timer()
             self._sync_save_path_edit()
             self._apply_theme()
+            self._apply_locale()
             self._sync_menu_state()
             self._sync_close_tooltip()
             if getattr(self, "tray", None):
@@ -2892,6 +3012,55 @@ class MainWindow(QMainWindow):
             self._sync_notify_timer()
 
     # --------------------------------------------------------------- theme
+
+    def _apply_locale(self):
+        """Language follows Windows unless Settings picks one. Extra fonts sit ahead of the system font."""
+        apply_language(self._settings.value("ui_language", "system", str))
+        font = ui_font(parse_families(self._settings.value("ui_fonts", "", str)))
+        app = QApplication.instance()
+        if app is not None:
+            app.setFont(font)
+        self.setFont(font)
+        self._refresh_locale_text()
+
+    def _refresh_locale_text(self):
+        if not hasattr(self, "tabs"):
+            return
+        self.tabs.setTabText(TAB_DOWNLOAD, tr("Download"))
+        self.tabs.setTabText(TAB_GRABBER, tr("Grabber"))
+        for table, key in (
+            (getattr(self, "table", None), "No downloads"),
+            (getattr(self, "grab_table", None), "No links"),
+        ):
+            hint = getattr(table, "empty_hint", None) if table is not None else None
+            if hint is not None:
+                hint.set_message(tr(key))
+        if hasattr(self, "add_new_btn"):
+            self.add_new_btn.setText(tr("Add New Links"))
+            self.add_btn.setText(tr("Add to downloads"))
+            self.continue_btn.setText(tr("Continue login"))
+            self.cancel_btn.setText(tr("Cancel"))
+            self._refresh_download_label()
+        if hasattr(self, "log_panel"):
+            self.log_panel.refresh_text()
+        for model in (getattr(self, "model", None), getattr(self, "grab_model", None)):
+            if model is None or model.columnCount() <= 0:
+                continue
+            model.headerDataChanged.emit(
+                Qt.Orientation.Horizontal, 0, model.columnCount() - 1,
+            )
+            if model.rowCount():
+                model.dataChanged.emit(
+                    model.index(0, 0),
+                    model.index(model.rowCount() - 1, model.columnCount() - 1),
+                    [Qt.ItemDataRole.DisplayRole],
+                )
+        if hasattr(self, "overview") and not self.overview.isHidden():
+            self._refresh_overview()
+        if hasattr(self, "counter"):
+            self._update_counter()
+        if hasattr(self, "_cpu_meter"):
+            self._refresh_stats()
 
     def _icon_color(self):
         return theme.icon_fg(self._dark)
@@ -3369,7 +3538,7 @@ class MainWindow(QMainWindow):
         self._restore_tool_settings()
         self._dark = get("dark", self._dark, bool)
         self._primary = theme.normalize_hex(get("theme_primary", self._primary, str))
-        self.log.setVisible(get("log_visible", False, bool))
+        self.log_dock.setVisible(get("log_visible", False, bool))
         self.overview.setVisible(get("overview_visible", True, bool))
         self.action_bar.setVisible(get("action_bar_visible", True, bool))
         self.properties.setVisible(get("properties_visible", False, bool))
@@ -3406,6 +3575,10 @@ class MainWindow(QMainWindow):
         if main and hasattr(self, "splitter"):
             self.splitter.restoreState(main)
             self._clamp_overview_size()
+        dock_state = get("dock_state")
+        if dock_state:
+            self.restoreState(dock_state)
+        self.log_dock.setVisible(get("log_visible", False, bool))
         self._sync_save_path_edit()
         state = get("header_v8")
         if state:
@@ -3418,7 +3591,7 @@ class MainWindow(QMainWindow):
         self._primary = theme.normalize_hex(
             get("theme_primary", getattr(self, "_primary", theme.DEFAULT_PRIMARY), str)
         )
-        self.log.setVisible(get("log_visible", self.log.isVisible(), bool))
+        self.log_dock.setVisible(get("log_visible", not self.log_dock.isHidden(), bool))
         self.act_grabber.setChecked(
             get("link_grabber", self.act_grabber.isChecked(), bool)
         )
@@ -3478,7 +3651,8 @@ class MainWindow(QMainWindow):
             put("recent_urls", remember_recent(self._recent_urls(), source))
         put("dark", self._dark)
         put("theme_primary", self._primary)
-        put("log_visible", self.log.isVisible())
+        put("log_visible", not self.log_dock.isHidden())
+        put("dock_state", self.saveState())
         put("status_visible", not self.statusBar().isHidden())
         put("overview_visible", not self.overview.isHidden())
         put("action_bar_visible", not self.action_bar.isHidden())

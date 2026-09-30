@@ -13,6 +13,17 @@ _PREFERRED = (
     "Liberation Sans",
     "Sans Serif",
 )
+# Segoe UI has no Khmer. These system fonts shape Khmer clusters instead of
+# stacking the vowel signs on one advance.
+_SCRIPT_FALLBACKS = (
+    "Leelawadee UI",
+    "Khmer UI",
+    "Khmer OS",
+    "Khmer OS Battambang",
+    "DaunPenh",
+    "Noto Sans Khmer",
+    "Noto Sans Khmer UI",
+)
 
 _FONT_CANDIDATES = {
     "win32": (
@@ -86,10 +97,44 @@ def register_fonts():
     return pick_ui_family()
 
 
-def setup_app_font(app):
+def parse_families(text):
+    """Comma-separated family names, in the order the user typed them."""
+    if text is None:
+        return []
+    if isinstance(text, (list, tuple)):
+        parts = text
+    else:
+        parts = str(text).replace(";", ",").split(",")
+    seen = []
+    for part in parts:
+        name = str(part).strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def ui_font(extra=()):
+    """The Windows UI font. Extra families, when set, are used before it.
+
+    With no extras the system font is left as Windows created it, so font
+    linking still covers Khmer and other scripts. A custom list replaces that
+    chain, so the system family and the script fonts are appended after it.
+    """
+    register_fonts()
+    font = QFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
+    extras = parse_families(extra)
+    if not extras:
+        return font
+    families = []
+    for name in extras + [font.family()] + list(_SCRIPT_FALLBACKS):
+        if name and name not in families:
+            families.append(name)
+    font.setFamilies(families)
+    return font
+
+
+def setup_app_font(app, extra=()):
     """Apply the UI font to the whole application."""
-    family = register_fonts()
-    font = QFont(family, 10)
-    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    font = ui_font(extra)
     app.setFont(font)
     return font

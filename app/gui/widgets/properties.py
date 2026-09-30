@@ -2,6 +2,7 @@
 import os
 
 from PySide6.QtCore import QSize, Signal
+from app.core.i18n import tr
 from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
@@ -37,7 +38,7 @@ class PropertiesPanel(QWidget):
         head.setSpacing(5)
         glyph = QLabel()
         glyph.setProperty("iconName", "settings")
-        self.title = QLabel("File Properties")
+        self.title = QLabel(tr("File Properties"))
         self.title.setObjectName("propertiesTitle")
         self.close_btn = QToolButton()
         self.close_btn.setObjectName("overviewClose")
@@ -64,10 +65,10 @@ class PropertiesPanel(QWidget):
         self.download_from.setPlaceholderText("Download from")
         self.comment = QLineEdit()
         self.comment.setPlaceholderText("Comment")
-        form.addRow("Name", self.name)
-        form.addRow("Save to", self.save_to)
-        form.addRow("Download from", self.download_from)
-        form.addRow("Comment", self.comment)
+        form.addRow(tr("Name"), self.name)
+        form.addRow(tr("Save to"), self.save_to)
+        form.addRow(tr("Download from"), self.download_from)
+        form.addRow(tr("Comment"), self.comment)
         column.addLayout(form)
 
         for field in (self.name, self.save_to, self.comment):

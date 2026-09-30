@@ -11,7 +11,10 @@ from app.core.runtime import (
     chrome_profile_dir,
     collect_csv_path,
     default_output_root,
+    append_app_log,
     gui_settings_path,
+    logs_dir,
+    session_log_path,
     resolve_ffmpeg,
     resolve_output_root,
     runtime_versions,
@@ -94,6 +97,8 @@ class RuntimeTools(unittest.TestCase):
                     os.path.join(folder, "channels", "jireel"),
                 )
                 self.assertEqual(util_cache_dir(), os.path.join(folder, "cache"))
+                self.assertEqual(logs_dir(), os.path.join(folder, "logs"))
+                self.assertTrue(session_log_path().startswith(logs_dir() + os.sep))
                 self.assertEqual(gui_settings_path(), os.path.join(folder, "gui.ini"))
 
     def test_sweep_moves_csv_and_chrome_profile(self):
