@@ -70,13 +70,13 @@ class ProgressDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _paint_background(painter, option):
-        if option.state & QStyle.StateFlag.State_Selected:
-            color = option.palette.color(QPalette.ColorRole.Highlight)
-        elif option.features & QStyleOptionViewItem.ViewItemFeature.Alternate:
+        if option.features & QStyleOptionViewItem.ViewItemFeature.Alternate:
             color = option.palette.color(QPalette.ColorRole.AlternateBase)
         else:
             color = option.palette.color(QPalette.ColorRole.Base)
         painter.fillRect(option.rect, color)
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, theme.accent_wash())
 
     @staticmethod
     def _is_dark(palette):

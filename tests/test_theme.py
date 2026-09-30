@@ -24,3 +24,16 @@ class ThemeColors(unittest.TestCase):
     def test_icon_fg_follows_the_theme_style(self):
         self.assertEqual(theme.icon_fg(True), theme.ICON_ON_DARK)
         self.assertEqual(theme.icon_fg(False), theme.ICON_ON_LIGHT)
+
+    def test_active_chrome_uses_a_translucent_accent(self):
+        css = theme.stylesheet(True, "#22aa44")
+        wash = "rgba(34, 170, 68, 56)"
+        self.assertIn(wash, css)
+        self.assertIn(f"QMenuBar::item:pressed {{\n    background: {wash};", css)
+        self.assertIn(f"QMenu::item:selected {{ background: {wash};", css)
+        self.assertIn(f"QTabBar::tab:selected {{\n    background: {wash};", css)
+        self.assertIn(f"QTreeView {{\n    selection-background-color: {wash};", css)
+        self.assertNotIn("QMenuBar::item:pressed { background: #22aa44;", css)
+        wash_color = theme.accent_wash()
+        self.assertEqual(wash_color.alpha(), theme.SELECTION_ALPHA)
+        self.assertLess(wash_color.alpha(), 255)

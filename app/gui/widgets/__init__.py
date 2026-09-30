@@ -1,4 +1,5 @@
 """GUI widgets: table header, progress cells, Overview strip, Grabber monitor."""
+from app.gui.widgets.empty import EmptyTableHint
 from app.gui.widgets.grabber import GrabberPanel
 from app.gui.widgets.header import CheckHeaderView
 from app.gui.widgets.loader import ExtractLoader
@@ -9,6 +10,6 @@ from app.gui.widgets.tray import TrayController
 from app.gui.widgets.views import ViewsPanel
 
 __all__ = [
-    "CheckHeaderView", "ExtractLoader", "GrabberPanel", "OverviewPanel",
+    "CheckHeaderView", "EmptyTableHint", "ExtractLoader", "GrabberPanel", "OverviewPanel",
     "ProgressDelegate", "PropertiesPanel", "TrayController", "ViewsPanel",
 ]

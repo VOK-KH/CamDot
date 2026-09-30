@@ -92,6 +92,7 @@ from app.gui.helpers import derive_channel, remember_recent
 from app.gui.notifications import notify, use_grabber_notifications
 from app.gui.instance import InstanceGuard
 from app.gui.jobs import JobWorker
+from app.gui.widgets.empty import EmptyTableHint
 from app.gui.widgets.header import CheckHeaderView
 from app.gui.widgets.overview import OverviewPanel
 from app.gui.widgets.properties import PropertiesPanel
@@ -321,7 +322,7 @@ class MainWindow(QMainWindow):
         col = QVBoxLayout(page)
         col.setContentsMargins(0, 4, 0, 0)
         col.setSpacing(6)
-        self.table = self._make_table(self.proxy, HIDDEN_BY_DEFAULT)
+        self.table = self._make_table(self.proxy, HIDDEN_BY_DEFAULT, "No downloads")
         col.addWidget(self.table, 1)
         return page
 
@@ -346,7 +347,7 @@ class MainWindow(QMainWindow):
         col = QVBoxLayout(page)
         col.setContentsMargins(0, 4, 0, 0)
         col.setSpacing(6)
-        self.grab_table = self._make_table(self.grab_proxy, GRABBER_HIDDEN)
+        self.grab_table = self._make_table(self.grab_proxy, GRABBER_HIDDEN, "No links")
         col.addWidget(self.grab_table, 1)
         self.extract_loader = ExtractLoader(page)
         self.extract_loader.aborted.connect(self._cancel)
@@ -589,7 +590,7 @@ class MainWindow(QMainWindow):
             return tree.mapFromSource(mid)
         return mid
 
-    def _make_table(self, proxy, hidden):
+    def _make_table(self, proxy, hidden, empty_message="No items"):
         tree = ReelTreeProxy(self)
         proxy.set_tree_mode(True)
         tree.setSourceModel(proxy)
@@ -635,6 +636,7 @@ class MainWindow(QMainWindow):
         table.selectionModel().selectionChanged.connect(self._fill_properties)
         table.setSortingEnabled(False)
         self._reset_columns(table, hidden)
+        table.empty_hint = EmptyTableHint(table, empty_message)
         return table
 
     def _on_variant_quality_chosen(self, index, quality):

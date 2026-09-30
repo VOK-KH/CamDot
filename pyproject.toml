@@ -34,6 +34,7 @@ packages = ["app"]
 "images/icons" = "app/images/icons"
 "images/dialog" = "app/images/dialog"
 "images/botty" = "app/images/botty"
+"images/empty" = "app/images/empty"
 
 [dependency-groups]
 dev = [

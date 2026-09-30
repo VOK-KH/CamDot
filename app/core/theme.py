@@ -7,6 +7,8 @@ DEFAULT_DARK = True
 DEFAULT_PRIMARY = "#1877f2"
 ICON_ON_DARK = "#eef2f7"
 ICON_ON_LIGHT = "#1c1e21"
+# Active tab, menu, and row selection use this alpha (0–255), not a solid fill.
+SELECTION_ALPHA = 56
 THEME_STYLES = (("Dark", True), ("Light", False))
 _active_primary = DEFAULT_PRIMARY
 
@@ -49,6 +51,19 @@ def primary_color():
     return _active_primary
 
 
+def accent_rgba(hex_color=None, alpha=SELECTION_ALPHA):
+    """CSS `rgba()` for a translucent accent wash."""
+    color = QColor(hex_color or primary_color())
+    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {int(alpha)})"
+
+
+def accent_wash(alpha=SELECTION_ALPHA):
+    """Accent color at selection opacity, for painters that bypass the stylesheet."""
+    color = QColor(primary_color())
+    color.setAlpha(int(alpha))
+    return color
+
+
 def icon_fg(dark):
     """Stroke color for icons sitting on the window chrome."""
     return ICON_ON_DARK if dark else ICON_ON_LIGHT
@@ -76,8 +91,13 @@ def palette(dark, base=None, primary=None):
         result.setColor(
             QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#6b7785")
         )
-    result.setColor(QPalette.ColorRole.Highlight, accent)
-    result.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    wash = QColor(accent)
+    wash.setAlpha(SELECTION_ALPHA)
+    result.setColor(QPalette.ColorRole.Highlight, wash)
+    result.setColor(
+        QPalette.ColorRole.HighlightedText,
+        QColor("#e7ecf3" if dark else "#1c1e21"),
+    )
     return result
 
 LIGHT = """
@@ -97,7 +117,7 @@ QComboBox::drop-down { border: none; width: 18px; }
 QComboBox QAbstractItemView {
     background: #ffffff;
     color: #1c1e21;
-    selection-background-color: #cfe0fb;
+    selection-background-color: __ACCENT_WASH__;
     selection-color: #1c1e21;
     border: 1px solid #c4c8ce;
     outline: 0;
@@ -120,8 +140,16 @@ QTableView {
     gridline-color: #dcdfe3;
     border: 1px solid #c4c8ce;
     color: #1c1e21;
-    selection-background-color: #cfe0fb;
+    selection-background-color: __ACCENT_WASH__;
     selection-color: #1c1e21;
+}
+QTreeView {
+    selection-background-color: __ACCENT_WASH__;
+    selection-color: #1c1e21;
+}
+QTreeView::item:selected, QTableView::item:selected {
+    background-color: __ACCENT_WASH__;
+    color: #1c1e21;
 }
 QTableView::indicator { width: 14px; height: 14px; }
 QHeaderView::section {
@@ -139,6 +167,8 @@ QPlainTextEdit {
     color: #3a3d42;
 }
 QLabel#grabberHint { color: #4b4f56; font-size: 12px; }
+QWidget#emptyTable { background: transparent; }
+QLabel#emptyTableHint { color: #6b7078; font-size: 13px; }
 
 QFrame#grabberPanel { background: #ffffff; border: 1px solid #b9bec6; border-radius: 4px; }
 QWidget#grabberHead { background: #dfe4ea; border-top-left-radius: 3px; border-top-right-radius: 3px; }
@@ -254,8 +284,10 @@ QWidget#winControls QToolButton {
 QWidget#winControls QToolButton:hover { background: #d4d7dc; }
 QWidget#winControls QToolButton#winClose:hover { background: #e81123; }
 QMenuBar::item { padding: 4px 9px; background: transparent; border-radius: 3px; }
-QMenuBar::item:selected { background: #cfe0fb; }
-QMenuBar::item:pressed { background: #1877f2; color: #ffffff; }
+QMenuBar::item:selected, QMenuBar::item:pressed {
+    background: __ACCENT_WASH__;
+    color: #1c1e21;
+}
 
 QMenu {
     background: #ffffff;
@@ -264,8 +296,22 @@ QMenu {
     padding: 4px;
 }
 QMenu::item { padding: 5px 16px 5px 12px; }
-QMenu::item:selected { background: #cfe0fb; }
+QMenu::item:selected { background: __ACCENT_WASH__; color: #1c1e21; }
 QMenu::separator { height: 1px; background: #dcdfe3; margin: 4px 8px; }
+
+QTabBar::tab {
+    background: transparent;
+    color: #3a3d42;
+    padding: 6px 12px;
+    border: none;
+    border-bottom: 2px solid transparent;
+}
+QTabBar::tab:hover:!selected { background: rgba(0, 0, 0, 18); }
+QTabBar::tab:selected {
+    background: __ACCENT_WASH__;
+    color: #1c1e21;
+    border-bottom: 2px solid #1877f2;
+}
 """
 
 DARK = """
@@ -285,8 +331,8 @@ QComboBox::drop-down { border: none; width: 18px; }
 QComboBox QAbstractItemView {
     background: #1a2230;
     color: #e7ecf3;
-    selection-background-color: #1f3a5f;
-    selection-color: #ffffff;
+    selection-background-color: __ACCENT_WASH__;
+    selection-color: #e7ecf3;
     border: 1px solid #2b3a4d;
     outline: 0;
 }
@@ -308,8 +354,16 @@ QTableView {
     gridline-color: #26303d;
     border: 1px solid #26303d;
     color: #dbe3ec;
-    selection-background-color: #1f3a5f;
-    selection-color: #ffffff;
+    selection-background-color: __ACCENT_WASH__;
+    selection-color: #dbe3ec;
+}
+QTreeView {
+    selection-background-color: __ACCENT_WASH__;
+    selection-color: #dbe3ec;
+}
+QTreeView::item:selected, QTableView::item:selected {
+    background-color: __ACCENT_WASH__;
+    color: #dbe3ec;
 }
 QTableView::indicator { width: 14px; height: 14px; }
 QHeaderView::section {
@@ -327,6 +381,8 @@ QPlainTextEdit {
     color: #b8c4d4;
 }
 QLabel#grabberHint { color: #8c98a8; font-size: 12px; }
+QWidget#emptyTable { background: transparent; }
+QLabel#emptyTableHint { color: #8c98a8; font-size: 13px; }
 
 QFrame#grabberPanel { background: #1a2230; border: 1px solid #34465e; border-radius: 4px; }
 QWidget#grabberHead { background: #223046; border-top-left-radius: 3px; border-top-right-radius: 3px; }
@@ -442,8 +498,10 @@ QWidget#winControls QToolButton {
 QWidget#winControls QToolButton:hover { background: #243044; }
 QWidget#winControls QToolButton#winClose:hover { background: #e81123; }
 QMenuBar::item { padding: 4px 9px; background: transparent; border-radius: 3px; }
-QMenuBar::item:selected { background: #243044; color: #ffffff; }
-QMenuBar::item:pressed { background: #1877f2; color: #ffffff; }
+QMenuBar::item:selected, QMenuBar::item:pressed {
+    background: __ACCENT_WASH__;
+    color: #e7ecf3;
+}
 
 QMenu {
     background: #1a2230;
@@ -452,8 +510,22 @@ QMenu {
     padding: 4px;
 }
 QMenu::item { padding: 5px 16px 5px 12px; }
-QMenu::item:selected { background: #1f3a5f; }
+QMenu::item:selected { background: __ACCENT_WASH__; color: #e7ecf3; }
 QMenu::separator { height: 1px; background: #26303d; margin: 4px 8px; }
+
+QTabBar::tab {
+    background: transparent;
+    color: #9fb0c3;
+    padding: 6px 12px;
+    border: none;
+    border-bottom: 2px solid transparent;
+}
+QTabBar::tab:hover:!selected { background: rgba(255, 255, 255, 16); }
+QTabBar::tab:selected {
+    background: __ACCENT_WASH__;
+    color: #e7ecf3;
+    border-bottom: 2px solid #1877f2;
+}
 """
 
 # Labelled action-bar buttons share the default gray pill; icon-only tools stay compact.
@@ -512,4 +584,7 @@ def stylesheet(dark, primary=None):
     """Window chrome plus action-bar pills; `#1877f2` is swapped for `primary`."""
     accent = set_primary(primary)
     css = (DARK if dark else LIGHT) + (ACTION_BAR_DARK if dark else ACTION_BAR_LIGHT)
-    return css.replace("#1877f2", accent)
+    return (
+        css.replace("__ACCENT_WASH__", accent_rgba(accent))
+        .replace("#1877f2", accent)
+    )

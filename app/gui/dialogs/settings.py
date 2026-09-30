@@ -162,6 +162,17 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(buttons)
         self.load()
+        self._fit_tab_row()
+
+    def _fit_tab_row(self):
+        """Size the dialog so every tab label is visible, with no scroll arrows."""
+        bar = self.tabs.tabBar()
+        bar.setUsesScrollButtons(False)
+        margins = self.layout().contentsMargins()
+        needed = bar.sizeHint().width() + margins.left() + margins.right() + 16
+        self.setMinimumWidth(max(needed, 520))
+        if self.width() < self.minimumWidth():
+            self.resize(self.minimumWidth(), max(self.height(), 420))
 
     def _add_tab(self, title):
         page = QWidget()

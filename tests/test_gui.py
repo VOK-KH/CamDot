@@ -1304,6 +1304,19 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(model.rowCount(), 2)
         self.assertEqual(model.index(0, COL_INDEX).data(), "1")
 
+    def test_empty_tables_show_the_placeholder_art(self):
+        art = os.path.join(icons.images_dir(), "empty", "list.png")
+        self.assertTrue(os.path.isfile(art), art)
+        for table in (self.window.table, self.window.grab_table):
+            hint = table.empty_hint
+            pixmap = hint.findChild(QLabel, "emptyTableArt").pixmap()
+            self.assertFalse(pixmap.isNull())
+            self.assertFalse(hint.isHidden())
+        self.window.set_urls(URLS)
+        self.assertTrue(self.window.table.empty_hint.isHidden())
+        self.window.clear_rows()
+        self.assertFalse(self.window.table.empty_hint.isHidden())
+
     def test_clear_empties_the_table(self):
         self.window.set_urls(URLS)
         self.window.clear_rows()
@@ -1503,6 +1516,18 @@ class GuiSmoke(unittest.TestCase):
         dialog.group_downloads.setChecked(True)
         dialog.accept()
         self.assertTrue(self.window._settings.value("group_downloads", type=bool))
+
+    def test_settings_tabs_fit_on_one_row(self):
+        dialog = SettingsDialog(self.window._settings, self.window)
+        dialog.show()
+        QApplication.processEvents()
+        bar = dialog.tabs.tabBar()
+        last = bar.tabRect(bar.count() - 1)
+        self.assertFalse(bar.usesScrollButtons())
+        self.assertGreater(last.width(), 0)
+        self.assertLessEqual(last.right() + 1, bar.width())
+        self.assertGreaterEqual(dialog.width(), bar.sizeHint().width())
+        dialog.close()
 
     def test_settings_tabs_split_download_grabber_and_privacy(self):
         dialog = SettingsDialog(self.window._settings, self.window)
