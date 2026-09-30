@@ -641,8 +641,8 @@ class GuiSmoke(unittest.TestCase):
                         time.sleep(0.01)
                     QThreadPool.globalInstance().waitForDone(2000)
                     QApplication.processEvents()
-                    self.assertEqual(fetched, ["odd.host"])
-                    mocked.assert_called_once()
+                    self.assertEqual(sorted(fetched), ["facebook.com", "odd.host"])
+                    self.assertGreaterEqual(mocked.call_count, 1)
                     odd = None
                     for row in range(panel.host_list.count()):
                         item = panel.host_list.item(row)

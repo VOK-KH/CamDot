@@ -363,8 +363,12 @@ def _resolve_tiktok_profile(url, log, cache_path=None, cookie_header=""):
     return tiktok_user_feed(sec_uid)
 
 
-def _feed_error(url, exc=None):
+def _feed_error(url, exc=None, cache_path=None):
     name = tiktok_username(url)
+    if not name and is_tiktok_user_feed(url):
+        sec_uid = tiktok_sec_uid(url)
+        if sec_uid:
+            name = tiktok_username_for_sec_uid(sec_uid, cache_path) or ""
     if name:
         return ValueError(TIKTOK_PROFILE_HELP.format(name=name))
     detail = str(exc).strip() if exc else ""
@@ -401,12 +405,12 @@ def _collect_ytdlp(
                     url = retry_url
                     info = _extract(ydl_cls, url, opts, should_stop)
                 else:
-                    raise _feed_error(url, exc) from exc
+                    raise _feed_error(url, exc, cache_path) from exc
             else:
-                raise _feed_error(url, exc) from exc
+                raise _feed_error(url, exc, cache_path) from exc
         raw = _flatten_entries(info, url)
         if not raw:
-            raise _feed_error(url)
+            raise _feed_error(url, cache_path=cache_path)
         for item in raw:
             _remember_from_info(item, cache_path)
         pending = sum(1 for item in raw if not _has_metadata(item))

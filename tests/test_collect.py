@@ -446,15 +446,16 @@ class CollectEntries(unittest.TestCase):
                 return None
 
         with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaises(ValueError) as caught:
-                collect_entries(
-                    "tt",
-                    "https://www.tiktok.com/@viralfinds__hub",
-                    output_root=folder,
-                    ydl_cls=BlockedYDL,
-                    log=lambda *_: None,
-                    cache_path=os.path.join(folder, "tt.json"),
-                )
+            with patch("app.core.collect.resolve_tiktok_sec_uid", return_value=""):
+                with self.assertRaises(ValueError) as caught:
+                    collect_entries(
+                        "tt",
+                        "https://www.tiktok.com/@viralfinds__hub",
+                        output_root=folder,
+                        ydl_cls=BlockedYDL,
+                        log=lambda *_: None,
+                        cache_path=os.path.join(folder, "tt.json"),
+                    )
         self.assertIn("@viralfinds__hub", str(caught.exception))
         self.assertIn("tiktokuser:", str(caught.exception))
 
