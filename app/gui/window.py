@@ -378,7 +378,7 @@ class MainWindow(QMainWindow):
             "collect", "Paste links and extract into Grabber (F5)", self._add_links)
         self.add_list_btn = self._tool_button(
             "download", "Add Grabber rows to Download (Ctrl+Shift+D)",
-            self._add_to_downloads)
+            self._add_to_downloads_asked)
         self.remove_btn = self._tool_button(
             "clear", "Remove selected rows (Delete)", self._remove_selected)
         self.settings_tool_btn = self._tool_button(
@@ -942,7 +942,7 @@ class MainWindow(QMainWindow):
             "Continue login", "login", self._continue_login)
         self.cancel_btn = self._bar_pill("Cancel", "cancel", self._cancel)
         self.add_btn = self._bar_pill(
-            "Add to downloads", "download", self._add_to_downloads)
+            "Add to downloads", "download", self._add_to_downloads_asked)
         self.add_btn.setToolTip("Move Grabber rows into the Download tab")
         self.download_btn = self._bar_pill(
             "Start all Downloads", "play",
@@ -1314,7 +1314,7 @@ class MainWindow(QMainWindow):
                 self.grab_autostart = was
         self._start_download(ignore_checks=True)
 
-    def _confirm_cleanup(self, action, count, remaining):
+    def _confirm_cleanup(self, action, count, remaining, grabber=False):
         if self._settings.value("cleanup_skip_confirm", False, bool):
             return True
         box = QMessageBox(self)
@@ -1325,7 +1325,8 @@ class MainWindow(QMainWindow):
         box.setInformativeText(
             f"Delete {count} link(s) — {remaining} link(s) remaining."
         )
-        box.setIconPixmap(icons.art("botty", "robot_del", 64))
+        art_name = "remove" if grabber else "robot_del"
+        box.setIconPixmap(icons.art("botty", art_name, 64))
         skip = QCheckBox("Don't show this again")
         box.setCheckBox(skip)
         cont = box.addButton("Continue", QMessageBox.ButtonRole.AcceptRole)
@@ -1349,7 +1350,9 @@ class MainWindow(QMainWindow):
         if not reels:
             return
         remaining = max(0, model.rowCount() - len(reels))
-        if not self._confirm_cleanup(action, len(reels), remaining):
+        if not self._confirm_cleanup(
+            action, len(reels), remaining, grabber=model is self.grab_model,
+        ):
             return
         if model is self.model:
             self._delete_reel_files(
@@ -1563,7 +1566,7 @@ class MainWindow(QMainWindow):
             file_menu, "&Extract list", self._start_collect,
             QKeySequence.StandardKey.Refresh, "collect")
         self.act_add = self._action(
-            file_menu, "Add to down&loads", self._add_to_downloads, "Ctrl+Shift+D",
+            file_menu, "Add to down&loads", self._add_to_downloads_asked, "Ctrl+Shift+D",
             "download")
         self.act_download = self._action(
             file_menu, "&Download", self._start_download, "Ctrl+D", "download")
@@ -1682,6 +1685,17 @@ class MainWindow(QMainWindow):
         model, _proxy, _table = self._pack()
         reels = [model.reel_at(row) for row in range(model.rowCount())]
         if not reels:
+            return
+        if model is self.grab_model:
+            if not self._confirm_cleanup(
+                "Delete All Links", len(reels), 0, grabber=True,
+            ):
+                return
+            removed = model.remove_urls([reel.url for reel in reels])
+            if removed:
+                self._append_log(f"Removed {removed} item(s) from the list.")
+            self._sync_header_check()
+            self._update_counter()
             return
         self._delete_reel_files(
             reels,
@@ -2114,11 +2128,17 @@ class MainWindow(QMainWindow):
                       if model.reel_at(row).checked]
         if not reels:
             return
-        self._delete_reel_files(
-            reels,
-            "Delete file?",
-            "Remove from the list.\n\nAlso delete the file(s) from disk?",
-        )
+        if model is self.grab_model:
+            action = "Delete Selected Links" if self._selected_reels() else "Delete All Links"
+            remaining = max(0, model.rowCount() - len(reels))
+            if not self._confirm_cleanup(action, len(reels), remaining, grabber=True):
+                return
+        else:
+            self._delete_reel_files(
+                reels,
+                "Delete file?",
+                "Remove from the list.\n\nAlso delete the file(s) from disk?",
+            )
         removed = model.remove_urls([reel.url for reel in reels])
         if removed:
             self._append_log(f"Removed {removed} item(s) from the list.")
@@ -2316,7 +2336,7 @@ class MainWindow(QMainWindow):
         if selected:
             if grabber:
                 self._context_action(
-                    menu, "Add to downloads", self._add_to_downloads, "download")
+                    menu, "Add to downloads", self._add_to_downloads_asked, "download")
                 menu.addMenu(self._variant_menu())
             else:
                 self._context_action(
@@ -3145,7 +3165,39 @@ class MainWindow(QMainWindow):
             merge=True,
         )
 
-    def _add_to_downloads(self):
+    def _add_to_downloads_asked(self, _checked=False):
+        """Add to downloads, then ask whether to start unless that choice is saved."""
+        self._add_to_downloads(ask_autostart=True)
+
+    def _confirm_autostart(self):
+        """Yes starts the queue, No only adds. None leaves the Grabber list alone."""
+        if self._settings.value("add_download_skip_confirm", False, bool):
+            return bool(self.grab_autostart)
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("Add to downloads"))
+        box.setIconPixmap(icons.art("botty", "ask", 64))
+        box.setText(tr("Start the download automatically?"))
+        box.setInformativeText(tr("Yes starts the download. No only adds the links."))
+        skip = QCheckBox(tr("Don't ask again"))
+        box.setCheckBox(skip)
+        yes = box.addButton(tr("Yes"), QMessageBox.ButtonRole.YesRole)
+        no = box.addButton(tr("No"), QMessageBox.ButtonRole.NoRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(yes)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is yes:
+            start = True
+        elif clicked is no:
+            start = False
+        else:
+            return None
+        if skip.isChecked():
+            self._set_grab_autostart(start)
+            self._settings.setValue("add_download_skip_confirm", True)
+        return start
+
+    def _add_to_downloads(self, ask_autostart=False):
         """Move Grabber rows into the Download queue, then open that tab."""
         self.tabs.setCurrentIndex(TAB_GRABBER)
         reels = self._selected_reels()
@@ -3160,6 +3212,11 @@ class MainWindow(QMainWindow):
                 "Extract a URL into the Grabber table first.",
             )
             return
+        start_after = bool(self.grab_autostart)
+        if ask_autostart:
+            start_after = self._confirm_autostart()
+            if start_after is None:
+                return
         default_dir = ""
         if getattr(self, "save_path_edit", None) is not None:
             default_dir = self.save_path_edit.text().strip()
@@ -3219,7 +3276,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"Skipped {skipped} item(s) already in Download.")
         self.tabs.setCurrentIndex(TAB_DOWNLOAD)
         self._update_counter()
-        if added and self.grab_autostart:
+        if added and start_after:
             self._start_download(ignore_checks=True)
 
     def _playlist_choice(self, url):

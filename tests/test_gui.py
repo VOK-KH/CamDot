@@ -698,9 +698,9 @@ class GuiSmoke(unittest.TestCase):
 
     def test_overview_splitter_cannot_grow_past_max(self):
         cap = self.window.overview.maximumHeight()
-        self.window.splitter.setSizes([80, 80, cap + 120])
+        self.window.splitter.setSizes([80, cap + 120])
         self.window._clamp_overview_size()
-        self.assertLessEqual(self.window.splitter.sizes()[2], cap)
+        self.assertLessEqual(self.window.splitter.sizes()[-1], cap)
         self.assertGreaterEqual(self.window.splitter.sizes()[0], 80)
 
     def test_overview_switches_to_the_grabber_readings(self):
@@ -909,6 +909,96 @@ class GuiSmoke(unittest.TestCase):
         self.assertEqual(self.window.model.urls(), URLS + ["https://www.facebook.com/reel/333"])
         self.assertEqual(self.window.grab_model.rowCount(), 0)
 
+    def test_add_to_downloads_asks_to_start_and_can_cancel(self):
+        started = []
+        self.window._start_download = lambda ignore_checks=False: started.append(True)
+        self.window.add_grab_urls(URLS)
+        self.window._confirm_autostart = lambda: None
+        self.window._add_to_downloads_asked()
+        self.assertEqual(self.window.grab_model.urls(), URLS)
+        self.assertEqual(self.window.model.rowCount(), 0)
+        self.assertEqual(started, [])
+
+        self.window._confirm_autostart = lambda: False
+        self.window._add_to_downloads_asked()
+        self.assertEqual(self.window.model.urls(), URLS)
+        self.assertEqual(self.window.grab_model.rowCount(), 0)
+        self.assertEqual(started, [])
+
+        self.window.add_grab_urls(["https://www.facebook.com/reel/333"])
+        self.window._confirm_autostart = lambda: True
+        self.window._add_to_downloads_asked()
+        self.assertIn("https://www.facebook.com/reel/333", self.window.model.urls())
+        self.assertEqual(started, [True])
+
+    def test_dont_ask_again_remembers_the_autostart_choice(self):
+        ask = icons.art("botty", "ask", 64)
+        self.assertFalse(ask.isNull())
+        self.assertEqual(ask.height(), 64)
+
+        class Box:
+            Icon = QMessageBox.Icon
+            ButtonRole = QMessageBox.ButtonRole
+            StandardButton = QMessageBox.StandardButton
+
+            def __init__(self, parent=None):
+                self.yes = QPushButton("Yes")
+                self.no = QPushButton("No")
+                self._clicked = self.yes
+                self._check = None
+
+            def setWindowTitle(self, *_args):
+                pass
+
+            def setIcon(self, *_args):
+                pass
+
+            def setIconPixmap(self, *_args):
+                pass
+
+            def setText(self, text):
+                self.text = text
+
+            def setInformativeText(self, *_args):
+                pass
+
+            def setCheckBox(self, box):
+                self._check = box
+                box.setChecked(True)
+
+            def addButton(self, *args):
+                label = args[0] if args else ""
+                if label == "No":
+                    return self.no
+                if label == "Yes":
+                    return self.yes
+                return QPushButton("Cancel")
+
+            def setDefaultButton(self, *_args):
+                pass
+
+            def exec(self):
+                return 0
+
+            def clickedButton(self):
+                return self._clicked
+
+        started = []
+        self.window._start_download = lambda ignore_checks=False: started.append(True)
+        self.window.add_grab_urls(URLS)
+        with patch.object(window_module, "QMessageBox", Box):
+            self.window._add_to_downloads_asked()
+        self.assertEqual(self.window.model.urls(), URLS)
+        self.assertEqual(started, [True])
+        self.assertTrue(self.window.grab_autostart)
+        self.assertTrue(self.window._settings.value("add_download_skip_confirm", type=bool))
+
+        self.window.add_grab_urls(["https://www.facebook.com/reel/333"])
+        with patch.object(window_module, "QMessageBox", side_effect=AssertionError("asked again")):
+            self.window._add_to_downloads_asked()
+        self.assertIn("https://www.facebook.com/reel/333", self.window.model.urls())
+        self.assertEqual(started, [True, True])
+
     def _menu_titles(self, table):
         return [action.text() for action in self.window._context_menu_for(table).actions()]
 
@@ -1055,6 +1145,29 @@ class GuiSmoke(unittest.TestCase):
         self.window.add_grab_urls(URLS)
         self._select_table_row(self.window.grab_table, 0)
         self.window._cleanup_links(True)
+        self.assertEqual(self.window.grab_model.urls(), [URLS[1]])
+
+    def test_grabber_remove_asks_with_the_surprised_dog(self):
+        dog = icons.art("botty", "remove", 64)
+        self.assertFalse(dog.isNull())
+        self.assertEqual(dog.height(), 64)
+        self.window.tabs.setCurrentIndex(1)
+        self.window.add_grab_urls(URLS)
+        self._select_table_row(self.window.grab_table, 0)
+        names = []
+        real = window_module.icons.art
+
+        def spy(folder, name, height=32):
+            names.append(name)
+            return real(folder, name, height)
+
+        with patch.object(window_module.icons, "art", side_effect=spy):
+            with patch.object(QMessageBox, "exec", return_value=0):
+                self.window._remove_selected()
+        self.assertIn("remove", names)
+        self.assertEqual(self.window.grab_model.urls(), URLS)
+        self.window._settings.setValue("cleanup_skip_confirm", True)
+        self.window._remove_selected()
         self.assertEqual(self.window.grab_model.urls(), [URLS[1]])
 
     def test_grabber_sorts_by_hoster(self):

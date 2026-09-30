@@ -647,6 +647,7 @@ class SettingsDialog(QDialog):
         self.grab_add_at_top.setChecked(False)
         self.grab_auto_confirm.setChecked(False)
         self.grab_autostart.setChecked(False)
+        self.settings.setValue("add_download_skip_confirm", False)
         self.chrome.setText("")
         self.ffmpeg.setText("")
         self.cookies_browser.setCurrentIndex(0)
