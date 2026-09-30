@@ -72,6 +72,32 @@ def cookie_domain_from_curl(text):
     return domains[0] if domains else ".kuaishou.com"
 
 
+def cookie_header_from_netscape(path, host_hint=""):
+    """Build a Cookie header from a Netscape cookie file for HTTP requests."""
+    if not path or not os.path.isfile(path):
+        return ""
+    host_hint = (host_hint or "").lower()
+    parts = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split("\t")
+                if len(cols) < 7:
+                    continue
+                domain = cols[0].lower()
+                if host_hint and host_hint not in domain:
+                    continue
+                name, value = cols[5], cols[6]
+                if name:
+                    parts.append(f"{name}={value}")
+    except OSError:
+        return ""
+    return "; ".join(parts)
+
+
 def write_netscape_cookies(raw, path=None):
     """Write a Netscape cookie file. Returns the path, or '' when there is nothing to write."""
     header = cookies_from_curl(raw)

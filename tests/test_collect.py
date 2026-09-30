@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from app.core.collect import (
     cached_tiktok_sec_uid,
+    _parse_tiktok_sec_uid_from_html,
+    resolve_tiktok_sec_uid,
     collect_entries,
     cookies_from_browser_value,
     entry_from_info,
@@ -364,6 +366,70 @@ class CollectEntries(unittest.TestCase):
             )
             self.assertEqual(tiktok_username_for_sec_uid(SEC_UID, cache), "viralfinds__hub")
         self.assertEqual(seen, [f"tiktokuser:{SEC_UID}"])
+
+    def test_parse_sec_uid_from_profile_html(self):
+        payload = {
+            "UserModule": {
+                "users": {
+                    "lik.lik410": {
+                        "uniqueId": "lik.lik410",
+                        "secUid": SEC_UID,
+                    }
+                }
+            }
+        }
+        html = (
+            '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
+            + json.dumps(payload)
+            + "</script>"
+        )
+        self.assertEqual(_parse_tiktok_sec_uid_from_html(html, "lik.lik410"), SEC_UID)
+
+    def test_profile_resolves_sec_uid_before_ytdlp(self):
+        seen = []
+
+        class ResolveYDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                seen.append(url)
+                return {
+                    "_type": "playlist",
+                    "entries": [{
+                        "id": "1",
+                        "title": "clip",
+                        "url": "https://www.tiktok.com/@lik.lik410/video/1",
+                    }],
+                }
+
+        html = json.dumps({
+            "UserModule": {"users": {"lik.lik410": {
+                "uniqueId": "lik.lik410", "secUid": SEC_UID,
+            }}},
+        })
+        with tempfile.TemporaryDirectory() as folder:
+            cache = os.path.join(folder, "tt.json")
+            with patch(
+                "app.core.collect.resolve_tiktok_sec_uid",
+                return_value=SEC_UID,
+            ):
+                collect_entries(
+                    "tt",
+                    "https://www.tiktok.com/@lik.lik410",
+                    output_root=folder,
+                    ydl_cls=ResolveYDL,
+                    log=lambda *_: None,
+                    cache_path=cache,
+                )
+        self.assertTrue(seen)
+        self.assertEqual(seen[0], f"tiktokuser:{SEC_UID}")
 
     def test_blocked_profile_explains_how_to_recover(self):
         class BlockedYDL:

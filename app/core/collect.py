@@ -2,10 +2,15 @@
 import csv
 import json
 import os
+import re
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import unquote, urlparse
 
+from app.core.cookies import cookie_header_from_netscape, cookies_from_curl
 from app.core.download import (
+    _HTTP_UA,
     _pinterest_pin_duration,
     collapse_text,
     pinterest_resource,
@@ -34,9 +39,17 @@ from app.core.urls import (
 )
 
 TIKTOK_PROFILE_HELP = (
-    "TikTok is blocking this profile page. Collect any single video from "
-    "@{name} first — the app remembers the creator and the profile works "
-    "afterwards. You can also paste tiktokuser:<sec_uid> directly."
+    "TikTok blocked listing @{name}. Collect one video from that creator first "
+    "(CamDot remembers their id), paste tiktokuser:<sec_uid>, or add TikTok "
+    "cookies in Settings → Tools and try again."
+)
+
+_TIKTOK_SEC_UID_RE = re.compile(
+    r'"(?:secUid|sec_uid)"\s*:\s*"(MS4w[^"\\]+)"',
+    re.IGNORECASE,
+)
+_TIKTOK_UNIVERSAL_JSON = (
+    '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
 )
 
 
@@ -128,6 +141,73 @@ def tiktok_username_for_sec_uid(sec_uid, path=None):
         if value == sec_uid:
             return name
     return ""
+
+
+def _dig_tiktok_sec_uid(obj, username="", depth=0):
+    if depth > 24 or obj is None:
+        return ""
+    if isinstance(obj, dict):
+        unique = obj.get("uniqueId") or obj.get("unique_id") or ""
+        sec = obj.get("secUid") or obj.get("sec_uid") or obj.get("channel_id") or ""
+        sec = str(sec).strip()
+        if sec.startswith(TIKTOK_SEC_UID_PREFIX):
+            if not username or not unique or str(unique).lower() == username.lower():
+                return sec
+        for value in obj.values():
+            found = _dig_tiktok_sec_uid(value, username, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _dig_tiktok_sec_uid(item, username, depth + 1)
+            if found:
+                return found
+    return ""
+
+
+def _parse_tiktok_sec_uid_from_html(html, username=""):
+    if not html:
+        return ""
+    marker = _TIKTOK_UNIVERSAL_JSON
+    start = html.find(marker)
+    if start >= 0:
+        start += len(marker)
+        end = html.find("</script>", start)
+        if end > start:
+            try:
+                data = json.loads(html[start:end])
+                found = _dig_tiktok_sec_uid(data, username)
+                if found:
+                    return found
+            except json.JSONDecodeError:
+                pass
+    for match in _TIKTOK_SEC_UID_RE.finditer(html):
+        sec_uid = match.group(1)
+        if sec_uid.startswith(TIKTOK_SEC_UID_PREFIX):
+            return sec_uid
+    return ""
+
+
+def resolve_tiktok_sec_uid(username, *, cookie_header="", timeout=20):
+    """Fetch a profile page and read the creator sec_uid when yt-dlp cannot."""
+    name = (username or "").lstrip("@").strip()
+    if not name:
+        return ""
+    url = f"https://www.tiktok.com/@{name}"
+    headers = {
+        "User-Agent": _HTTP_UA,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            html = response.read().decode("utf-8", errors="replace")
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+        return ""
+    return _parse_tiktok_sec_uid_from_html(html, name)
 
 
 def remember_tiktok_user(username, sec_uid, path=None):
@@ -246,15 +326,40 @@ def _flatten_entries(info, source_url):
     return [info]
 
 
-def _tiktok_feed_url(url, log, cache_path=None):
+def _tiktok_feed_url(url, log, cache_path=None, cookie_header=""):
     """Swap a TikTok profile URL for tiktokuser:<sec_uid> once we know the creator."""
     name = tiktok_username(url)
     if not name:
         return url
     sec_uid = cached_tiktok_sec_uid(name, cache_path)
     if not sec_uid:
+        sec_uid = resolve_tiktok_sec_uid(name, cookie_header=cookie_header)
+        if sec_uid:
+            remember_tiktok_user(name, sec_uid, cache_path)
+            log(f"Found creator id for @{name}.")
+    if not sec_uid:
         return url
     log(f"Listing @{name} by creator id.")
+    return tiktok_user_feed(sec_uid)
+
+
+def _tiktok_secondary_id_error(exc):
+    text = str(exc or "").lower()
+    return "secondary user id" in text or "tiktokuser:" in text
+
+
+def _resolve_tiktok_profile(url, log, cache_path=None, cookie_header=""):
+    name = tiktok_username(url)
+    if not name:
+        return url
+    sec_uid = cached_tiktok_sec_uid(name, cache_path)
+    if not sec_uid:
+        sec_uid = resolve_tiktok_sec_uid(name, cookie_header=cookie_header)
+        if sec_uid:
+            remember_tiktok_user(name, sec_uid, cache_path)
+            log(f"Found creator id for @{name}.")
+    if not sec_uid:
+        return url
     return tiktok_user_feed(sec_uid)
 
 
@@ -278,8 +383,9 @@ def _collect_ytdlp(
     kind = classify_source(url) if feed is None else (FEED if feed else SINGLE)
     after = dateafter if detect_platform(url) == "tiktok" else ""
     opts = _ydl_opts(cookies_browser, cookies_file=cookies_file, dateafter=after)
+    cookie_header = cookie_header_from_netscape(cookies_file, "tiktok")
     if kind == FEED:
-        url = _tiktok_feed_url(url, log, cache_path)
+        url = _tiktok_feed_url(url, log, cache_path, cookie_header=cookie_header)
         opts["extract_flat"] = "in_playlist"
         log("Listing videos…")
         try:
@@ -287,7 +393,17 @@ def _collect_ytdlp(
         except StopRequested:
             raise
         except Exception as exc:
-            raise _feed_error(url, exc) from exc
+            if _tiktok_secondary_id_error(exc):
+                retry_url = _resolve_tiktok_profile(
+                    url, log, cache_path, cookie_header=cookie_header,
+                )
+                if retry_url != url:
+                    url = retry_url
+                    info = _extract(ydl_cls, url, opts, should_stop)
+                else:
+                    raise _feed_error(url, exc) from exc
+            else:
+                raise _feed_error(url, exc) from exc
         raw = _flatten_entries(info, url)
         if not raw:
             raise _feed_error(url)
