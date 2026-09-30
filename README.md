@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="15%" align="center" src="images/icons/app.svg" alt="CamDot logo">
+  <img width="15%" align="center" src="images/icons/app.png" alt="CamDot logo">
 </p>
 <h1 align="center">CamDot</h1>
 <p align="center">

@@ -38,9 +38,43 @@ def _source(name):
         return f.read()
 
 
+@lru_cache(maxsize=1)
+def _app_icon():
+    """Full-color window mark. Accent tint does not apply."""
+    path = os.path.join(icon_dir(), "app.png")
+    source = QPixmap(path)
+    if source.isNull():
+        return None
+    result = QIcon()
+    native = min(source.width(), source.height())
+    for size in (16, 20, 24, 32, 48, 64, 128, 256):
+        edge = min(size, native)
+        pixmap = source.scaled(
+            edge,
+            edge,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        result.addPixmap(pixmap)
+        if edge * 2 <= native:
+            sharp = source.scaled(
+                edge * 2,
+                edge * 2,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            sharp.setDevicePixelRatio(2.0)
+            result.addPixmap(sharp)
+    return result
+
+
 @lru_cache(maxsize=256)
 def icon(name, color="#1c1e21", size=18):
     """Return the named icon stroked in `color`, rendered crisply at 2x."""
+    if name == "app":
+        painted = _app_icon()
+        if painted is not None:
+            return painted
     svg = _source(name).replace("currentColor", color)
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
     pixmap = QPixmap(size * 2, size * 2)

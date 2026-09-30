@@ -1489,7 +1489,7 @@ class MainWindow(QMainWindow):
     def _build_logo(self):
         logo = QLabel()
         logo.setObjectName("logo")
-        logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(18, 18))
+        logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(22, 22))
         logo.setContentsMargins(6, 0, 4, 0)
         return logo
 
@@ -2916,7 +2916,7 @@ class MainWindow(QMainWindow):
         self.grab_model.set_dark(self._dark)
         self.setWindowIcon(icons.icon("app", self._primary, 64))
         if getattr(self, "logo", None):
-            self.logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(18, 18))
+            self.logo.setPixmap(icons.icon("app", self._primary, 64).pixmap(22, 22))
         if getattr(self, "tray", None):
             self.tray.refresh_icon()
 

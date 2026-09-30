@@ -1,39 +1,72 @@
-"""Build images/icons/camdot.ico from the app SVG (used by PyInstaller and Inno Setup)."""
+"""Build images/icons/camdot.ico from images/icons/app.png (PyInstaller and Inno Setup)."""
+import struct
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SVG = ROOT / "images" / "icons" / "app.svg"
+PNG = ROOT / "images" / "icons" / "app.png"
 OUT = ROOT / "images" / "icons" / "camdot.ico"
-COLOR = "#1877f2"
+SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def _png_bytes(image):
+    from PySide6.QtCore import QBuffer, QIODevice
+
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not image.save(buffer, "PNG"):
+        raise SystemExit("Could not encode an icon frame")
+    data = bytes(buffer.data())
+    buffer.close()
+    return data
+
+
+def _write_ico(path, frames):
+    """Write a PNG-compressed ICO. Width/height 0 means 256."""
+    header = struct.pack("<HHH", 0, 1, len(frames))
+    entries = bytearray()
+    blobs = []
+    offset = 6 + 16 * len(frames)
+    for image, blob in frames:
+        side = image.width()
+        blobs.append(blob)
+        entries += struct.pack(
+            "<BBBBHHII",
+            0 if side >= 256 else side,
+            0 if side >= 256 else side,
+            0,
+            0,
+            1,
+            32,
+            len(blob),
+            offset,
+        )
+        offset += len(blob)
+    path.write_bytes(header + entries + b"".join(blobs))
 
 
 def main():
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-    from PySide6.QtSvg import QSvgRenderer
+    from PySide6.QtGui import QImage, QPixmap
     from PySide6.QtWidgets import QApplication
 
-    app = QApplication.instance() or QApplication(sys.argv)
-    renderer = QSvgRenderer(str(SVG))
-    if not renderer.isValid():
-        raise SystemExit(f"Invalid SVG: {SVG}")
+    QApplication.instance() or QApplication(sys.argv)
+    source = QPixmap(str(PNG))
+    if source.isNull():
+        raise SystemExit(f"Missing artwork: {PNG}")
 
-    sizes = (16, 24, 32, 48, 64, 128, 256)
-    images = []
-    for size in sizes:
-        image = QImage(size, size, QImage.Format.Format_ARGB32)
-        image.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(image)
-        renderer.render(painter)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        painter.fillRect(image.rect(), QColor(COLOR))
-        painter.end()
-        images.append(QPixmap.fromImage(image))
+    frames = []
+    for size in SIZES:
+        image = source.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ).toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        frames.append((image, _png_bytes(image)))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    if not images[-1].save(str(OUT), "ICO"):
-        raise SystemExit(f"Could not write {OUT}")
+    _write_ico(OUT, frames)
     print(f"Wrote {OUT}")
     return 0
 

@@ -411,7 +411,7 @@ class SettingsDialog(QDialog):
             self.theme_style.addItem(label, dark)
         self.theme_style.setToolTip("Dark or light window chrome, tables, and toolbars.")
         self.primary = ColorField()
-        self.primary.setToolTip("Accent for tabs, focus rings, checked tools, and the app icon.")
+        self.primary.setToolTip("Accent for tabs, focus rings, and checked tools.")
         look.addRow("Theme style", self.theme_style)
         look.addRow("Primary color", self.primary)
 

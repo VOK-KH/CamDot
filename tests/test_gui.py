@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QItemSelectionModel, QSettings, Qt, QThreadPool
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, QItemSelectionModel, QRect, QSettings, Qt, QThreadPool
+from PySide6.QtGui import QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOptionViewItem,
     QToolButton,
 )
 
@@ -41,6 +43,7 @@ from app.core.model import (
     COL_URL,
     COL_VARIANT,
     COLUMNS,
+    ReelModel,
 )
 from app.gui import (
     ALERT_ART,
@@ -54,7 +57,7 @@ from app.gui import window as window_module
 from app.gui.dialogs.alert import build_alert
 from app.gui.dialogs.links import AddLinksDialog
 from app.gui.dialogs.platforms import PlatformsDialog
-from app.gui.widgets import GrabberPanel
+from app.gui.widgets import GrabberPanel, ProgressDelegate
 from app.gui.widgets.loader import BOTTY_DONE, BottyClip, botty_clip_path, botty_load_path
 from app.core.fonts import setup_app_font
 from app.core.runtime import APP_FOLDER_NAME, default_output_root
@@ -90,6 +93,19 @@ class Icons(unittest.TestCase):
 
     def test_icons_render_to_a_pixmap(self):
         self.assertFalse(icons.icon("download", "#ffffff").isNull())
+
+    def test_app_icon_uses_the_color_artwork(self):
+        path = os.path.join(icons.icon_dir(), "app.png")
+        self.assertTrue(os.path.isfile(path), path)
+        image = icons.icon("app", "#1877f2", 64).pixmap(64, 64).toImage()
+        self.assertFalse(image.isNull())
+        warm = 0
+        for y in range(0, image.height(), 3):
+            for x in range(0, image.width(), 3):
+                color = image.pixelColor(x, y)
+                if color.alpha() > 40 and color.red() > color.blue() + 20:
+                    warm += 1
+        self.assertGreater(warm, 8)
 
     def test_grabber_monitor_artwork_loads(self):
         names = [artwork for _name, artwork in GrabberPanel.FIELDS]
@@ -1828,6 +1844,60 @@ class GuiSmoke(unittest.TestCase):
                     prompt_update=True, notify_uptodate=True
                 )
         uptodate.emit.assert_called_once()
+
+
+class ProgressDelegatePaint(unittest.TestCase):
+    """Progress cells must use theme greens/blues, not the Windows red chunk."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        setup_app_font(cls.app)
+
+    def _paint_progress(self, model, row, width=140, height=28):
+        image = QImage(width, height, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, width, height)
+        option.palette = theme.palette(True, primary="#1877f2")
+        option.state = QStyle.StateFlag.State_Enabled
+        ProgressDelegate().paint(painter, option, model.index(row, COL_PROGRESS))
+        painter.end()
+        return image
+
+    @staticmethod
+    def _has_opaque_pixel(image):
+        for y in range(image.height()):
+            for x in range(image.width()):
+                if image.pixelColor(x, y).alpha() > 0:
+                    return True
+        return False
+
+    def test_done_and_downloading_bars_use_theme_fill_colors(self):
+        theme.set_primary("#1877f2")
+        model = ReelModel()
+        model.set_dark(True)
+        model.set_entries([
+            {"url": URLS[0], "status": "done", "percent": 100},
+            {"url": URLS[1], "status": "downloading", "percent": 40},
+        ])
+
+        done = self._paint_progress(model, 0)
+        downloading = self._paint_progress(model, 1)
+
+        self.assertTrue(self._has_opaque_pixel(done))
+        self.assertTrue(self._has_opaque_pixel(downloading))
+
+        # Left side of the 100% done fill — avoid centered "100%" text.
+        done_pixel = done.pixelColor(18, 14)
+        self.assertGreater(done_pixel.green(), done_pixel.red())
+        self.assertGreater(done_pixel.green(), done_pixel.blue())
+
+        # Inside the ~40% blue fill (bar inset starts at x=4).
+        dl_pixel = downloading.pixelColor(24, 14)
+        self.assertGreaterEqual(dl_pixel.blue(), dl_pixel.red())
+        self.assertGreater(dl_pixel.blue(), dl_pixel.green())
 
 
 if __name__ == "__main__":

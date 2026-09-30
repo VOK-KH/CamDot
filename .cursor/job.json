@@ -292,6 +292,23 @@
       ],
       "notes": "Done: Board/UserPins collect; Pin JSON image/video fallback. 281 tests OK.",
       "updated_at": "2026-09-15T01:50:00Z"
+    },
+    {
+      "id": "JOB-017",
+      "title": "Themed progress bars instead of Windows red chunks",
+      "assignee": "gui-engineer",
+      "status": "done",
+      "priority": 1,
+      "depends_on": [],
+      "files": ["app/gui/widgets/progress.py", "tests/test_gui.py"],
+      "prompt": "Replace native CE_ProgressBar painting so Windows does not draw chunky red 100% bars.",
+      "acceptance": [
+        "Progress cells are custom-painted, not QStyle CE_ProgressBar",
+        "Done rows use the done green; active rows use the theme accent",
+        "Unit tests pass without network"
+      ],
+      "notes": "Done: custom QPainter bars. Done=green, downloading=accent. ProgressDelegatePaint OK. 2 pre-existing suite failures (instance guard, telegram report).",
+      "updated_at": "2026-09-30T15:30:00Z"
     }
   ]
 }
