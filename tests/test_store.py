@@ -55,6 +55,41 @@ class Store(unittest.TestCase):
             self.assertEqual(entries[0]["percent"], 50.0)
             self.assertEqual(entries[0]["filepath"], part)
 
+    def test_reconcile_finds_files_under_movie_save_dir(self):
+        with tempfile.TemporaryDirectory() as root:
+            movie = os.path.join(root, "Tales of Herding Gods")
+            os.makedirs(movie)
+            finished = os.path.join(movie, "E1 [13436346].mp4")
+            with open(finished, "wb") as f:
+                f.write(b"x")
+            entries = store.reconcile_entries(
+                [{
+                    "url": "https://www.bilibili.tv/en/play/2117053/13436346",
+                    "id": "13436346",
+                    "status": "queued",
+                    "save_dir": movie,
+                }],
+                root,
+            )
+            self.assertEqual(entries[0]["status"], "done")
+            self.assertEqual(entries[0]["filepath"], os.path.abspath(finished))
+
+    def test_reconcile_finds_flat_files_under_output_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            finished = os.path.join(root, "E16 [13437877].mp4")
+            with open(finished, "wb") as f:
+                f.write(b"x")
+            entries = store.reconcile_entries(
+                [{
+                    "url": "https://www.bilibili.tv/en/play/2117053/13437877",
+                    "id": "13437877",
+                    "status": "queued",
+                }],
+                root,
+            )
+            self.assertEqual(entries[0]["status"], "done")
+            self.assertTrue(entries[0]["filepath"].endswith("E16 [13437877].mp4"))
+
     def test_find_output_file_searches_kind_subfolders(self):
         with tempfile.TemporaryDirectory() as folder:
             nested = os.path.join(folder, "video", "clip [abc].mp4")

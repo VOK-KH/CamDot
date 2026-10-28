@@ -14,6 +14,8 @@ from app.core.collect import (
     entry_from_info,
     remember_tiktok_user,
     tiktok_username_for_sec_uid,
+    _flatten_entries,
+    _is_bilibili_extra_item,
 )
 from app.core.jobs import StopRequested
 from app.core.runtime import collect_csv_path
@@ -47,6 +49,78 @@ class EntryFromInfo(unittest.TestCase):
         self.assertEqual(entry["platform"], "youtube")
         self.assertEqual(entry["title"], "Watch me")
         self.assertEqual(entry["description"], "A caption")
+
+
+class FlattenEntries(unittest.TestCase):
+    def test_unsmuggles_biliintl_episode_urls(self):
+        items = _flatten_entries(
+            {
+                "_type": "playlist",
+                "title": "Tales of Herding Gods",
+                "entries": [{
+                    "id": "13436346",
+                    "url": (
+                        "https://www.bilibili.tv/en/play/2117053/13436346"
+                        "#__youtubedl_smuggle=%7B%22title%22%3A+%22E1%22%7D"
+                    ),
+                }],
+            },
+            "https://www.bilibili.tv/en/play/2117053",
+        )
+        self.assertEqual(
+            items[0]["url"],
+            "https://www.bilibili.tv/en/play/2117053/13436346",
+        )
+        self.assertEqual(items[0]["title"], "Tales of Herding Gods E1")
+        self.assertEqual(items[0]["uploader"], "Tales of Herding Gods")
+
+    def test_bilibili_playlist_drops_pv_extras(self):
+        items = _flatten_entries(
+            {
+                "_type": "playlist",
+                "title": "Tales of Herding Gods",
+                "entries": [
+                    {
+                        "id": "1",
+                        "url": (
+                            "https://www.bilibili.tv/en/play/2117053/1"
+                            "#__youtubedl_smuggle=%7B%22title%22%3A+%22E106%22%7D"
+                        ),
+                    },
+                    {
+                        "id": "13427506",
+                        "url": (
+                            "https://www.bilibili.tv/en/play/2117053/13427506"
+                            "#__youtubedl_smuggle=%7B%22title%22%3A+%22PV%22%7D"
+                        ),
+                    },
+                    {
+                        "id": "28221820",
+                        "url": (
+                            "https://www.bilibili.tv/en/play/2117053/28221820"
+                            "#__youtubedl_smuggle=%7B%22title%22%3A+%22PV2%22%7D"
+                        ),
+                    },
+                ],
+            },
+            "https://www.bilibili.tv/en/play/2117053",
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Tales of Herding Gods E106")
+        self.assertTrue(_is_bilibili_extra_item({"title": "PV"}, "Tales of Herding Gods"))
+        self.assertTrue(_is_bilibili_extra_item({"title": "PV2"}, "Tales of Herding Gods"))
+
+    def test_direct_pv_url_is_not_dropped_as_a_single(self):
+        items = _flatten_entries(
+            {
+                "id": "13427506",
+                "title": "PV",
+                "webpage_url": "https://www.bilibili.tv/en/play/2117053/13427506",
+            },
+            "https://www.bilibili.tv/en/play/2117053/13427506",
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "PV")
 
 
 class CollectEntries(unittest.TestCase):
@@ -487,6 +561,121 @@ class CollectEntries(unittest.TestCase):
             )
         self.assertTrue(seen["noplaylist"])
         self.assertEqual(len(entries), 1)
+
+    def test_bilibili_play_series_lists_episodes_from_flat_playlist(self):
+        seen = []
+
+        class SeriesYDL:
+            def __init__(self, opts):
+                self.opts = opts
+                seen.append(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                self.last_url = url
+                return {
+                    "_type": "playlist",
+                    "id": "2117053",
+                    "title": "Tales of Herding Gods",
+                    "entries": [
+                        {
+                            "_type": "url",
+                            "id": "13436346",
+                            "ie_key": "BiliIntl",
+                            "url": (
+                                "https://www.bilibili.tv/en/play/2117053/13436346"
+                                "#__youtubedl_smuggle=%7B%22title%22%3A+%22E1%22%7D"
+                            ),
+                        },
+                        {
+                            "_type": "url",
+                            "id": "13436492",
+                            "ie_key": "BiliIntl",
+                            "url": (
+                                "https://www.bilibili.tv/en/play/2117053/13436492"
+                                "#__youtubedl_smuggle=%7B%22title%22%3A+%22E2%22%7D"
+                            ),
+                        },
+                        {
+                            "_type": "url",
+                            "id": "13427506",
+                            "ie_key": "BiliIntl",
+                            "url": (
+                                "https://www.bilibili.tv/en/play/2117053/13427506"
+                                "#__youtubedl_smuggle=%7B%22title%22%3A+%22PV%22%7D"
+                            ),
+                        },
+                        {
+                            "_type": "url",
+                            "id": "28221820",
+                            "ie_key": "BiliIntl",
+                            "url": (
+                                "https://www.bilibili.tv/en/play/2117053/28221820"
+                                "#__youtubedl_smuggle=%7B%22title%22%3A+%22PV2%22%7D"
+                            ),
+                        },
+                    ],
+                }
+
+        logs = []
+        with tempfile.TemporaryDirectory() as folder:
+            _, entries = collect_entries(
+                "bili",
+                "https://www.bilibili.tv/en/play/2117053"
+                "?bstar_from=bstar-web.category-anime.0.0",
+                output_root=folder,
+                ydl_cls=SeriesYDL,
+                log=logs.append,
+            )
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].get("extract_flat"), "in_playlist")
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(
+            entries[0]["url"],
+            "https://www.bilibili.tv/en/play/2117053/13436346",
+        )
+        self.assertEqual(entries[0]["title"], "Tales of Herding Gods E1")
+        self.assertEqual(entries[1]["title"], "Tales of Herding Gods E2")
+        self.assertTrue(any("Skipped 2 PV/extra" in line for line in logs))
+
+    def test_bilibili_play_episode_stays_one_post(self):
+        seen = {}
+
+        class EpisodeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+                seen.update(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                return {
+                    "webpage_url": url,
+                    "id": "13436346",
+                    "title": "Tales of Herding Gods E1",
+                    "uploader": "Bstation",
+                }
+
+        with tempfile.TemporaryDirectory() as folder:
+            _, entries = collect_entries(
+                "bili",
+                "https://www.bilibili.tv/en/play/2117053/13436346",
+                output_root=folder,
+                ydl_cls=EpisodeYDL,
+                log=lambda *_: None,
+            )
+        self.assertTrue(seen["noplaylist"])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["id"], "13436346")
 
     def test_feed_choice_lists_a_mix_through_its_seed_video(self):
         class MixYDL:

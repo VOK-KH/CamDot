@@ -13,6 +13,8 @@ from app.core.urls import (
     collection_strategy,
     detect_platform,
     extract_supported_urls,
+    is_bilibili_episode_url,
+    is_bilibili_season_url,
     is_supported_source,
     looks_shell_truncated,
     normalize_channel_url,
@@ -284,6 +286,34 @@ class ClassifySource(unittest.TestCase):
         )
         self.assertEqual(classify_source("https://www.bilibili.com/video/BV1xx411c7mD"), SINGLE)
         self.assertEqual(classify_source("https://space.bilibili.com/123"), FEED)
+        self.assertEqual(
+            classify_source(
+                "https://www.bilibili.tv/en/play/2117053"
+                "?bstar_from=bstar-web.category-anime.0.0"
+            ),
+            FEED,
+        )
+        self.assertEqual(
+            classify_source("https://www.bilibili.tv/en/play/2117053/13436346"),
+            SINGLE,
+        )
+        self.assertEqual(
+            classify_source("https://www.bilibili.com/bangumi/play/ss41635"),
+            FEED,
+        )
+        self.assertEqual(
+            classify_source("https://www.bilibili.com/bangumi/play/ep123"),
+            SINGLE,
+        )
+        self.assertTrue(
+            is_bilibili_season_url("https://www.bilibili.tv/en/play/2117053")
+        )
+        self.assertFalse(
+            is_bilibili_season_url("https://www.bilibili.tv/en/play/2117053/13436346")
+        )
+        self.assertTrue(
+            is_bilibili_episode_url("https://www.bilibili.tv/en/play/2117053/13436346")
+        )
 
     def test_douyin(self):
         self.assertEqual(
@@ -372,6 +402,15 @@ class NormalizeSourceUrl(unittest.TestCase):
                 "?bstar_from=bstar-web.homepage.recommend.all"
             ),
             "https://www.bilibili.tv/en/video/4794551511289856",
+        )
+
+    def test_bilibili_play_series_drops_tracking_query(self):
+        self.assertEqual(
+            normalize_source_url(
+                "https://www.bilibili.tv/en/play/2117053"
+                "?bstar_from=bstar-web.category-anime.0.0"
+            ),
+            "https://www.bilibili.tv/en/play/2117053",
         )
 
     def test_douyin_jingxuan_becomes_a_video_url(self):

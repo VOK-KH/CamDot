@@ -26,7 +26,12 @@ from app.core.runtime import (
     resolve_ffmpeg,
     yt_dlp_command_prefix,
 )
-from app.core.urls import detect_platform
+from app.core.urls import (
+    bilibili_play_ids,
+    detect_platform,
+    is_bilibili_episode_url,
+    is_bilibili_season_url,
+)
 
 DEFAULT_WORKERS = 4
 DEFAULT_FRAGMENTS = 8
@@ -137,6 +142,12 @@ def normalize_media_kinds(media_kinds=None):
 _PLACEHOLDER_FOLDER_NAMES = frozenset(
     {"", "default", "video", "untitled", "na", "none"}
 )
+_EPISODE_TITLE_RE = re.compile(
+    r"^(?P<series>.+?)\s+(?P<ep>(?:E|EP|Episode|#)\s*\d+)\s*$",
+    re.I,
+)
+_EPISODE_ONLY_RE = re.compile(r"^(?:E|EP|Episode|#)\s*\d+$", re.I)
+_BILI_PLAY_EP_RE = re.compile(r"/play/(\d+)/(\d+)", re.I)
 
 
 def source_folder_name(title="", description="", rid=""):
@@ -152,6 +163,143 @@ def source_folder_name(title="", description="", rid=""):
     token = secrets.token_hex(4)
     suffix = _WIN_ILLEGAL.sub("", collapse_text(rid)).strip(" .")
     return f"{token}-{suffix}" if suffix else token
+
+
+def _item_field(item, name):
+    if isinstance(item, dict):
+        return item.get(name) or ""
+    return getattr(item, name, "") or ""
+
+
+def series_folder_for_items(items):
+    """Movie/series folder when items are episodes of one title; else empty.
+
+    Prefers a shared ``Series E1`` title prefix, then a shared uploader for
+    bilibili.tv ``/play/{season}/{episode}`` links, then the season page title.
+    """
+    rows = [item for item in (items or []) if item is not None]
+    if not rows:
+        return ""
+    titles = [collapse_text(_item_field(item, "title")) for item in rows]
+    titled = [title for title in titles if title]
+    uploaders = {
+        collapse_text(_item_field(item, "uploader"))
+        for item in rows
+        if collapse_text(_item_field(item, "uploader"))
+    }
+    matches = [_EPISODE_TITLE_RE.match(title) for title in titled]
+    if titled and matches and all(matches):
+        series_names = {match.group("series").strip() for match in matches}
+        if len(series_names) == 1:
+            return source_folder_name(next(iter(series_names)))
+    if titled and all(_EPISODE_ONLY_RE.match(title) for title in titled) and len(uploaders) == 1:
+        return source_folder_name(next(iter(uploaders)))
+    seasons = set()
+    season_pages = 0
+    for item in rows:
+        url = str(_item_field(item, "url") or "")
+        if is_bilibili_season_url(url):
+            season_pages += 1
+        match = _BILI_PLAY_EP_RE.search(url)
+        if match:
+            seasons.add(match.group(1))
+        elif is_bilibili_episode_url(url):
+            season, _ep = bilibili_play_ids(url)
+            if season:
+                seasons.add(season)
+    if len(rows) == 1 and season_pages == 1:
+        name = titled[0] if titled else (next(iter(uploaders)) if uploaders else "")
+        return source_folder_name(name) if name else ""
+    if len(seasons) != 1:
+        return ""
+    if len(uploaders) == 1:
+        return source_folder_name(next(iter(uploaders)))
+    if titled and len(set(titled)) == 1 and not _EPISODE_ONLY_RE.match(titled[0]):
+        return source_folder_name(titled[0])
+    return ""
+
+
+def episode_leaf_name(title="", description="", rid="", series=""):
+    """Per-episode folder under a series folder; prefer ``E1`` over full title."""
+    text = collapse_text(description) or collapse_text(title)
+    series = collapse_text(series)
+    if text and series:
+        match = _EPISODE_TITLE_RE.match(text)
+        if match and match.group("series").strip().lower() == series.lower():
+            return source_folder_name(match.group("ep"))
+        prefix = f"{series} "
+        if text.lower().startswith(prefix.lower()) and len(text) > len(prefix):
+            return source_folder_name(text[len(prefix):])
+    return source_folder_name(title, description, rid)
+
+
+def is_series_package(item):
+    """True for the parent movie/series row (not an episode)."""
+    return collapse_text(_item_field(item, "package_kind")).lower() == "series"
+
+
+def group_series_entries(entries, *, existing_urls=None):
+    """Prepend a movie package row and tag episode rows for tree grouping.
+
+    Used for bilibili.tv season extracts so Grabber shows
+    ``Back as Immortal Lord`` → E1, E2, … instead of a flat list.
+    """
+    rows = [dict(item) if isinstance(item, dict) else {"url": item} for item in (entries or [])]
+    rows = [row for row in rows if row.get("url")]
+    if len(rows) < 2:
+        return rows
+    episodes = [row for row in rows if not is_series_package(row)]
+    if len(episodes) < 2:
+        return rows
+    movie = series_folder_for_items(episodes)
+    if not movie:
+        return rows
+    seasons = set()
+    host = ""
+    for row in episodes:
+        url = str(row.get("url") or "")
+        season, episode = bilibili_play_ids(url)
+        if season and episode:
+            seasons.add(season)
+            if not host:
+                from urllib.parse import urlparse
+                host = urlparse(url).netloc or "www.bilibili.tv"
+    if len(seasons) != 1:
+        # Non-bili shared title prefix still groups under a synthetic series URL.
+        season_url = f"series:{movie}"
+        season_id = movie
+    else:
+        season_id = next(iter(seasons))
+        host = host or "www.bilibili.tv"
+        season_url = f"https://{host}/en/play/{season_id}"
+    known = set(existing_urls or [])
+    out = []
+    if season_url not in known and not any(
+        is_series_package(row) and (row.get("series_url") or row.get("url")) == season_url
+        for row in rows
+    ):
+        platform = detect_platform(season_url) if "://" in season_url else (
+            detect_platform(episodes[0].get("url") or "") or "bilibili"
+        )
+        out.append({
+            "url": season_url,
+            "id": season_id,
+            "title": movie,
+            "uploader": movie,
+            "series": movie,
+            "series_url": season_url,
+            "package_kind": "series",
+            "platform": platform,
+            "status": "queued",
+            "expanded": False,
+        })
+    for row in episodes:
+        item = dict(row)
+        item["series"] = movie
+        item["series_url"] = season_url
+        item.pop("package_kind", None)
+        out.append(item)
+    return out
 
 
 def _is_absolute_path(path):
@@ -1011,6 +1159,66 @@ def _download_one(
     return code
 
 
+def _expand_bilibili_season_downloads(
+    urls,
+    folders,
+    *,
+    log,
+    should_stop=None,
+    on_progress=None,
+    cookies_browser="",
+    cookies_file="",
+):
+    """Replace bilibili.tv season page URLs with episode URLs and movie folders."""
+    on_progress = on_progress or (lambda url, event: None)
+    folders = dict(folders or {})
+    expanded = []
+    for url in urls or []:
+        if not is_bilibili_season_url(url):
+            expanded.append(url)
+            continue
+        log(f"Expanding series into episodes: {url}")
+        from app.core.collect import list_bilibili_season_entries
+        try:
+            entries = list_bilibili_season_entries(
+                url,
+                log=log,
+                should_stop=should_stop,
+                cookies_browser=cookies_browser,
+                cookies_file=cookies_file,
+            )
+        except Exception as exc:
+            log(f"Could not expand series: {exc}")
+            expanded.append(url)
+            continue
+        if not entries:
+            expanded.append(url)
+            continue
+        movie = series_folder_for_items(entries)
+        prior = (folders.get(url) or "").strip()
+        for entry in entries:
+            ep_url = entry.get("url") or ""
+            if not ep_url:
+                continue
+            expanded.append(ep_url)
+            if movie:
+                if prior and movie.lower() in os.path.normpath(prior).lower().split(os.sep):
+                    folders[ep_url] = prior
+                elif prior:
+                    folders[ep_url] = os.path.join(prior, movie)
+                else:
+                    folders[ep_url] = movie
+            on_progress(ep_url, {
+                "title": entry.get("title"),
+                "id": entry.get("id"),
+                "uploader": entry.get("uploader"),
+                "status": "queued",
+            })
+        on_progress(url, {"status": "done"})
+        folders.pop(url, None)
+    return expanded, folders
+
+
 def download_urls(
     channel,
     urls,
@@ -1043,8 +1251,21 @@ def download_urls(
     workers = max(1, int(workers))
     fragments = max(1, int(fragments))
     kinds = normalize_media_kinds(media_kinds)
-    folders = source_folders or {}
+    folders = dict(source_folders or {})
 
+    if not urls:
+        log("Nothing to download.")
+        return 0
+
+    urls, folders = _expand_bilibili_season_downloads(
+        urls,
+        folders,
+        log=log,
+        should_stop=should_stop,
+        on_progress=on_progress,
+        cookies_browser=cookies_browser,
+        cookies_file=cookies_file,
+    )
     if not urls:
         log("Nothing to download.")
         return 0

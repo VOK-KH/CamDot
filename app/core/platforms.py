@@ -80,6 +80,8 @@ PLATFORM_CATALOG = [
         "icon": "platform-bilibili",
         "features": [
             "Videos on bilibili.tv, bilibili.com, and b23.tv",
+            "bilibili.tv /play/{season} lists every episode",
+            "A /play/{season}/{episode} link stays one episode",
         ],
         "limits": [],
     },

@@ -314,6 +314,49 @@ def _drop_bilibili_tracking(url):
     return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, query, ""))
 
 
+def _bilibili_play_segments(url):
+    """Path segments after optional lang code for bilibili play/bangumi URLs."""
+    if not clean_url(url):
+        return []
+    if detect_platform(url) != "bilibili":
+        return []
+    parts = urlparse(_with_scheme(url))
+    segments = [s for s in _segments(parts.path)]
+    if segments and segments[0].isalpha() and len(segments[0]) <= 3 and len(segments) > 1:
+        segments = segments[1:]
+    return [s.lower() for s in segments]
+
+
+def bilibili_play_ids(url):
+    """Return ``(season_id, episode_id_or_None)`` for /play/ season pages."""
+    segments = _bilibili_play_segments(url)
+    if not segments:
+        return "", ""
+    if segments[0] == "play" and len(segments) >= 2 and segments[1].isdigit():
+        season = segments[1]
+        episode = segments[2] if len(segments) >= 3 and segments[2].isdigit() else ""
+        return season, episode
+    if segments[0] == "bangumi":
+        rest = [s for s in segments[1:] if s != "play"]
+        if rest and rest[0].startswith("ss") and rest[0][2:].isdigit():
+            return rest[0][2:], ""
+        if rest and rest[0].startswith("ep") and rest[0][2:].isdigit():
+            return "", rest[0][2:]
+    return "", ""
+
+
+def is_bilibili_season_url(url):
+    """True for bilibili.tv ``/play/{season}`` (whole series, not one episode)."""
+    season, episode = bilibili_play_ids(url)
+    return bool(season) and not episode
+
+
+def is_bilibili_episode_url(url):
+    """True for bilibili.tv ``/play/{season}/{episode}``."""
+    season, episode = bilibili_play_ids(url)
+    return bool(season and episode)
+
+
 def _classify_bilibili(parts):
     host = parts.netloc.lower().split(":")[0].removeprefix("www.")
     if host == "b23.tv" or host.endswith(".b23.tv"):
@@ -323,11 +366,27 @@ def _classify_bilibili(parts):
     segments = [s.lower() for s in _segments(parts.path)]
     if segments and segments[0].isalpha() and len(segments[0]) <= 3 and len(segments) > 1:
         segments = segments[1:]
-    if segments and segments[0] in ("video", "play", "bangumi", "festival"):
+    if not segments:
         return SINGLE
-    if "video" in segments or "play" in segments:
+    head = segments[0]
+    if head == "video" or head == "festival":
         return SINGLE
-    if segments and segments[0] in ("space", "medialist", "list"):
+    if head == "play":
+        # /play/{seasonId} is the series; /play/{seasonId}/{episodeId} is one ep.
+        return FEED if len(segments) == 2 else SINGLE
+    if head == "bangumi":
+        rest = [s for s in segments[1:] if s != "play"]
+        if rest and rest[0].startswith("ss"):
+            return FEED
+        if rest and rest[0].startswith("ep"):
+            return SINGLE
+        return SINGLE
+    if "video" in segments:
+        return SINGLE
+    if "play" in segments:
+        idx = segments.index("play")
+        return FEED if len(segments) == idx + 2 else SINGLE
+    if head in ("space", "medialist", "list"):
         return FEED
     return SINGLE
 

@@ -542,5 +542,63 @@ class Filtering(unittest.TestCase):
         self.assertEqual(self.proxy.rowCount(), 1)
 
 
+class SeriesPackageProgress(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.model = ReelModel()
+        self.model.set_urls([
+            {
+                "url": "https://www.bilibili.tv/en/play/2129061",
+                "id": "2129061",
+                "title": "Back as Immortal Lord",
+                "series": "Back as Immortal Lord",
+                "series_url": "https://www.bilibili.tv/en/play/2129061",
+                "package_kind": "series",
+            },
+            {
+                "url": "https://www.bilibili.tv/en/play/2129061/1",
+                "id": "1",
+                "title": "Back as Immortal Lord E1",
+                "series": "Back as Immortal Lord",
+                "series_url": "https://www.bilibili.tv/en/play/2129061",
+            },
+            {
+                "url": "https://www.bilibili.tv/en/play/2129061/2",
+                "id": "2",
+                "title": "Back as Immortal Lord E2",
+                "series": "Back as Immortal Lord",
+                "series_url": "https://www.bilibili.tv/en/play/2129061",
+            },
+        ])
+
+    def test_root_percent_averages_episode_progress(self):
+        self.model.apply_event(
+            "https://www.bilibili.tv/en/play/2129061/1",
+            {"status": "done", "percent": 100},
+        )
+        self.model.apply_event(
+            "https://www.bilibili.tv/en/play/2129061/2",
+            {"status": "downloading", "percent": 50},
+        )
+        root = self.model.package_reel("https://www.bilibili.tv/en/play/2129061")
+        self.assertEqual(self.model._display_percent(root), 75.0)
+        self.assertEqual(self.model._display_status(root), "downloading")
+        index = self.model.index(0, COL_PROGRESS)
+        self.assertEqual(self.model.data(index, PERCENT_ROLE), 75.0)
+
+    def test_root_becomes_done_when_all_episodes_done(self):
+        for suffix in ("1", "2"):
+            self.model.apply_event(
+                f"https://www.bilibili.tv/en/play/2129061/{suffix}",
+                {"status": "done", "percent": 100},
+            )
+        root = self.model.package_reel("https://www.bilibili.tv/en/play/2129061")
+        self.assertEqual(self.model._display_percent(root), 100.0)
+        self.assertEqual(self.model._display_status(root), "done")
+
+
 if __name__ == "__main__":
     unittest.main()

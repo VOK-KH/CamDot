@@ -9,6 +9,7 @@ from collections import deque
 from PySide6.QtCore import (
     QEvent,
     QItemSelectionModel,
+    QModelIndex,
     QPoint,
     QSettings,
     QSize,
@@ -58,11 +59,17 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import icons, store, sysinfo, telegram_notify, theme
-from app.core.collect import cookies_from_browser_value, write_entries_csv
+from app.core.collect import (
+    cookies_from_browser_value,
+    list_bilibili_season_entries,
+    write_entries_csv,
+)
 from app.core.cookies import prepare_cookies_file
 from app.core.download import (
     ALL_MEDIA_KINDS, DEFAULT_FRAGMENTS, DEFAULT_WORKERS, OUTPUT_TEMPLATE,
-    read_urls, resolve_filename_template, source_folder_name, tiktok_dateafter,
+    episode_leaf_name, group_series_entries, is_series_package, read_urls,
+    resolve_filename_template, series_folder_for_items, source_folder_name,
+    tiktok_dateafter,
 )
 from app.gui.constants import (
     COLUMN_WIDTHS,
@@ -149,6 +156,7 @@ from app.core.updates import (
 from app.core.urls import (
     clean_url,
     extract_supported_urls,
+    is_bilibili_season_url,
     looks_shell_truncated,
     normalize_source_url,
     youtube_watch_with_list,
@@ -210,6 +218,9 @@ class MainWindow(QMainWindow):
         self._pending_auto_confirm = False
         self._quitting = False
         self._grab_sync = deque()
+        # Before tables exist — modelReset during build can call expand restore.
+        self._download_expanded_keys = set()
+        self._grab_expanded_keys = set()
 
         self.model = ReelModel(self)
         self.proxy = ReelFilterProxy(self)
@@ -250,6 +261,13 @@ class MainWindow(QMainWindow):
         self._store_timer.setSingleShot(True)
         self._store_timer.setInterval(400)
         self._store_timer.timeout.connect(self._flush_store)
+        self._progress_ui_timer = QTimer(self)
+        self._progress_ui_timer.setSingleShot(True)
+        self._progress_ui_timer.setInterval(250)
+        self._progress_ui_timer.timeout.connect(self._refresh_progress_ui)
+        self._progress_disk_timer = QTimer(self)
+        self._progress_disk_timer.setInterval(2000)
+        self._progress_disk_timer.timeout.connect(self._refresh_download_progress_from_disk)
         self._cpu_meter = sysinfo.CpuMeter()
         self._stats_timer = QTimer(self)
         self._stats_timer.setInterval(STATS_INTERVAL_MS)
@@ -273,8 +291,7 @@ class MainWindow(QMainWindow):
         self._notify_timer.timeout.connect(self._poll_telegram_notify)
         self._notify_busy = False
         self._sync_notify_timer()
-        if self.source_edit.text().strip():
-            self._load_saved_list(self._channel())
+        self._auto_load_download_list()
         self.grab_panel = GrabberPanel(self)
         self.grab_panel.aborted.connect(self._cancel_grabber)
         self._grab_close_timer = QTimer(self)
@@ -409,12 +426,18 @@ class MainWindow(QMainWindow):
         on_list = index == TAB_DOWNLOAD
         self.download_btn.setVisible(on_list)
         self.add_btn.setVisible(not on_list)
+        if on_list:
+            if not self.model.rowCount():
+                self._auto_load_download_list()
+            else:
+                self._refresh_download_progress_from_disk()
         self._sync_header_check()
         self._update_counter()
         self._refresh_overview()
         self._refresh_views()
         self._fill_properties()
         self._place_extract_loader()
+        self._sync_progress_disk_timer()
 
     def _build_window_controls(self):
         """Minimise, maximise and close, standing in for the native buttons."""
@@ -642,6 +665,10 @@ class MainWindow(QMainWindow):
         table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         table.customContextMenuRequested.connect(self._show_context_menu)
+        table.expanded.connect(lambda index, t=table: self._remember_tree_expand(t, index, True))
+        table.collapsed.connect(lambda index, t=table: self._remember_tree_expand(t, index, False))
+        tree.modelAboutToBeReset.connect(lambda t=table: self._on_tree_about_to_reset(t))
+        tree.modelReset.connect(lambda t=table: self._schedule_restore_tree_expansion(t))
         proxy.dataChanged.connect(self._sync_header_check)
         proxy.modelReset.connect(self._sync_header_check)
         proxy.layoutChanged.connect(self._sync_header_check)
@@ -2030,11 +2057,153 @@ class MainWindow(QMainWindow):
         self._sync_header_check()
         self._update_counter()
 
+    def _expanded_keys_store(self, table):
+        if table is getattr(self, "grab_table", None):
+            if not hasattr(self, "_grab_expanded_keys"):
+                self._grab_expanded_keys = set()
+            return self._grab_expanded_keys
+        if not hasattr(self, "_download_expanded_keys"):
+            self._download_expanded_keys = set()
+        return self._download_expanded_keys
+
     def _collapse_tree(self, table):
         """Keep package folders collapsed; flat single-file rows stay as-is."""
         if table is None:
             return
+        self._expanded_keys_store(table).clear()
         table.collapseAll()
+
+    def _package_key_for_index(self, table, index):
+        if table is None or not index.isValid():
+            return ""
+        source = self._map_index_to_source(table, index)
+        if not source.isValid():
+            return ""
+        reel = source.model().reel_at(source.row())
+        return reel.series_url or reel.url or ""
+
+    def _set_tree_expand_frozen(self, table, frozen):
+        if table is not None:
+            table.setProperty("camdot_expand_frozen", bool(frozen))
+
+    def _tree_expand_frozen(self, table):
+        return bool(table is not None and table.property("camdot_expand_frozen"))
+
+    def _capture_tree_scroll(self, table):
+        if table is None:
+            return
+        vbar = table.verticalScrollBar()
+        hbar = table.horizontalScrollBar()
+        table.setProperty("camdot_scroll_v", vbar.value() if vbar else 0)
+        table.setProperty("camdot_scroll_h", hbar.value() if hbar else 0)
+
+    def _restore_tree_scroll(self, table):
+        if table is None:
+            return
+        v = table.property("camdot_scroll_v")
+        h = table.property("camdot_scroll_h")
+        vbar = table.verticalScrollBar()
+        hbar = table.horizontalScrollBar()
+        if vbar is not None and v is not None:
+            vbar.setValue(int(v))
+        if hbar is not None and h is not None:
+            hbar.setValue(int(h))
+
+    def _on_tree_about_to_reset(self, table):
+        self._capture_tree_scroll(table)
+        self._set_tree_expand_frozen(table, True)
+
+    def _remember_tree_expand(self, table, index, expanded):
+        # Ignore expand/collapse churn while the tree model is resetting.
+        if self._tree_expand_frozen(table):
+            return
+        key = self._package_key_for_index(table, index)
+        if not key:
+            return
+        store = self._expanded_keys_store(table)
+        if expanded:
+            store.add(key)
+        else:
+            store.discard(key)
+
+    def _schedule_restore_tree_expansion(self, table):
+        """After a tree model reset, restore expand state and scroll position."""
+        if table is None:
+            return
+        keys = set(self._expanded_keys_store(table))
+
+        def restore():
+            try:
+                if keys:
+                    self._restore_expanded_package_keys(table, keys)
+                self._restore_tree_scroll(table)
+            finally:
+                self._set_tree_expand_frozen(table, False)
+
+        QTimer.singleShot(0, restore)
+
+    def _expanded_package_keys(self, table):
+        """Series/package URLs currently expanded, plus remembered keys across rebuilds."""
+        keys = set(self._expanded_keys_store(table))
+        if table is None or table.model() is None:
+            return keys
+        model = table.model()
+
+        def walk(parent):
+            for row in range(model.rowCount(parent)):
+                index = model.index(row, 0, parent)
+                if not index.isValid():
+                    continue
+                if table.isExpanded(index):
+                    key = self._package_key_for_index(table, index)
+                    if key:
+                        keys.add(key)
+                if model.hasChildren(index):
+                    walk(index)
+
+        walk(QModelIndex())
+        return keys
+
+    def _restore_expanded_package_keys(self, table, keys):
+        """Re-expand movie folders after a background model/tree refresh."""
+        if table is None or table.model() is None or not keys:
+            return
+        model = table.model()
+        remembered = self._expanded_keys_store(table)
+        remembered.update(keys)
+
+        def walk(parent):
+            for row in range(model.rowCount(parent)):
+                index = model.index(row, 0, parent)
+                if not index.isValid():
+                    continue
+                source = self._map_index_to_source(table, index)
+                if source.isValid():
+                    reel = source.model().reel_at(source.row())
+                    key = reel.series_url or reel.url
+                    if key in keys and (is_series_package(reel) or model.hasChildren(index)):
+                        table.expand(index)
+                if model.hasChildren(index):
+                    walk(index)
+
+        walk(QModelIndex())
+
+    def _with_tree_expansion(self, table, action):
+        """Run `action` without losing expand state or scroll position."""
+        keys = self._expanded_package_keys(table)
+        self._capture_tree_scroll(table)
+        try:
+            return action()
+        finally:
+            if keys:
+                self._expanded_keys_store(table).update(keys)
+
+            def restore():
+                if keys:
+                    self._restore_expanded_package_keys(table, keys)
+                self._restore_tree_scroll(table)
+
+            QTimer.singleShot(0, restore)
 
     def _insert_grab_urls(self, urls, light=False):
         known = set(self.grab_model.urls())
@@ -2049,9 +2218,19 @@ class MainWindow(QMainWindow):
         kinds = None
         if hasattr(self, "views") and self.views is not None:
             kinds = self.views.checked_kinds() or {"video"}
-        for item in urls:
+        grouped = group_series_entries(urls, existing_urls=known)
+        movie = series_folder_for_items(
+            [item for item in grouped if isinstance(item, dict) and not is_series_package(item)]
+        )
+        movie_dir = self._movie_save_dir(movie, self._output_root()) if movie else ""
+        for item in grouped:
+            stamped = self._stamp_entry(item)
+            if movie_dir and (
+                is_series_package(stamped) or stamped.get("series_url")
+            ):
+                stamped["save_dir"] = movie_dir
             expanded.extend(extract_package_rows(
-                self._stamp_entry(item),
+                stamped,
                 kinds=kinds,
                 kind_folders=folders,
                 folder_group=self._folder_group(),
@@ -2253,22 +2432,27 @@ class MainWindow(QMainWindow):
     def _on_progress(self, url, event):
         on_grab = self.grab_model.apply_event(url, event)
         on_list = self.model.apply_event(url, event)
-        if (on_grab or on_list) and event.get("status") not in (None, "downloading"):
-            self._update_counter()
-        if event.get("filepath") or event.get("status") == "done":
-            self._sync_output_tree(url)
         status = event.get("status")
+        if on_grab or on_list:
+            if status in (None, "downloading"):
+                self._schedule_progress_ui()
+            else:
+                self._update_counter()
+        if event.get("filepath") or status == "done":
+            self._sync_output_tree(url)
         if on_list:
             if status in ("done", "failed", "cancelled"):
                 self._flush_store()
+                self._refresh_download_progress_from_disk()
             else:
                 self._schedule_store()
+        self._sync_progress_disk_timer()
 
     def _sync_output_tree(self, url):
         """Show the save folder as the parent and files in that folder as children."""
         for model, table in ((self.model, self.table), (self.grab_model, self.grab_table)):
             reel = model.package_reel(url)
-            if reel is None:
+            if reel is None or is_series_package(reel):
                 continue
             folder = self._folder_for_reel(reel)
             raw = [
@@ -2278,15 +2462,16 @@ class MainWindow(QMainWindow):
             ]
             if not raw:
                 continue
-            model.attach_output_files(
-                url, folder, raw, expand=False, folder_group=self._folder_group(),
-            )
-            if model is self.model:
-                self.proxy.invalidate()
-                self._collapse_tree(table)
-            else:
-                self.grab_proxy.invalidate()
-                self._collapse_tree(table)
+
+            def _apply():
+                # Model reset already rebuilds the tree; skip proxy.invalidate
+                # so background progress does not thrash scroll.
+                model.attach_output_files(
+                    url, folder, raw, expand=False, folder_group=self._folder_group(),
+                )
+
+            # Never collapseAll here — background progress must keep movie folders open.
+            self._with_tree_expansion(table, _apply)
 
     def _selected_reels(self):
         model, _proxy, table = self._pack()
@@ -2722,11 +2907,135 @@ class MainWindow(QMainWindow):
             return
         self._store_timer.start()
 
+    def _schedule_progress_ui(self):
+        """Throttle overview/counter refresh while percent ticks arrive."""
+        timer = getattr(self, "_progress_ui_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start()
+
+    def _refresh_progress_ui(self):
+        self._update_counter()
+
+    def _sync_progress_disk_timer(self):
+        """Poll disk for finished/.part progress while the Download tab is active."""
+        timer = getattr(self, "_progress_disk_timer", None)
+        if timer is None:
+            return
+        on_download = (
+            hasattr(self, "tabs") and self.tabs.currentIndex() == TAB_DOWNLOAD
+        )
+        if on_download and self.model.rowCount():
+            if not timer.isActive():
+                timer.start()
+        else:
+            timer.stop()
+
+    def _remember_download_channel(self, channel):
+        channel = (channel or "").strip()
+        if channel:
+            self._settings.setValue("last_download_channel", channel)
+
+    def _auto_load_download_list(self):
+        """Load the last download queue and refresh done/.part progress from disk."""
+        if self.model.rowCount():
+            self._refresh_download_progress_from_disk()
+            return True
+        candidates = []
+        for name in (
+            self._channel(),
+            self._settings.value("last_download_channel", "", str),
+        ):
+            name = (name or "").strip()
+            if name and name not in candidates:
+                candidates.append(name)
+        for name in candidates:
+            if self._load_saved_list(name):
+                return True
+        return False
+
+    def _refresh_download_progress_from_disk(self):
+        """Re-read finished videos and .part sizes into the Download table."""
+        if not self.model.rowCount() or getattr(self, "_restoring_list", False):
+            return False
+        entries = []
+        for url in self.model.urls():
+            pkg = self.model.package_reel(url)
+            if pkg is None or pkg.variant:
+                continue
+            entries.append(pkg.as_entry())
+        if not entries:
+            return False
+        root = self._output_root()
+        channel = (
+            self._settings.value("last_download_channel", "", str).strip()
+            or self._channel()
+        )
+        reconciled = store.reconcile_entries(
+            entries,
+            root,
+            store.archive_path(root, channel),
+        )
+        job_busy = (
+            self._thread is not None
+            and not self._collecting
+            and not getattr(self, "_grabber_job", False)
+        )
+        changed = False
+        series_touched = set()
+        for item in reconciled:
+            url = item.get("url") or ""
+            pkg = self.model.package_reel(url)
+            if pkg is None:
+                continue
+            if is_series_package(pkg):
+                # Root % / status are computed from episodes; don't overwrite from disk.
+                series_touched.add(pkg.series_url or pkg.url)
+                continue
+            if item.get("save_dir") and item["save_dir"] != pkg.save_dir:
+                self.model.update_reel(url, save_dir=item["save_dir"], match_variant="")
+            if job_busy and pkg.status == "downloading" and item.get("status") != "done":
+                if item.get("filepath") and item["filepath"] != pkg.filepath:
+                    self.model.apply_event(url, {"filepath": item["filepath"]})
+                    changed = True
+                continue
+            event = {
+                "status": item.get("status") or "queued",
+                "percent": item.get("percent"),
+                "id": item.get("id"),
+            }
+            if item.get("filepath"):
+                event["filepath"] = item["filepath"]
+            before = (pkg.status, pkg.percent, pkg.filepath)
+            if self.model.apply_event(url, event):
+                after_pkg = self.model.package_reel(url)
+                after = (
+                    after_pkg.status,
+                    after_pkg.percent,
+                    after_pkg.filepath,
+                ) if after_pkg else before
+                if after != before:
+                    changed = True
+                if event["status"] == "done":
+                    self._sync_output_tree(url)
+                if pkg.series_url:
+                    series_touched.add(pkg.series_url)
+        for series_url in series_touched:
+            self.model._touch_series_package(series_url)
+        if changed or series_touched:
+            self._update_counter()
+            if changed:
+                self._schedule_store()
+        self._sync_progress_disk_timer()
+        return changed
+
     def _flush_store(self):
         self._store_timer.stop()
         if self._restoring_list or (self._collecting and not self.model.rowCount()):
             return
-        channel = self._channel()
+        channel = (
+            self._settings.value("last_download_channel", "", str).strip()
+            or self._channel()
+        )
         if not channel:
             return
         entries = self.model.entries()
@@ -2743,9 +3052,11 @@ class MainWindow(QMainWindow):
                 entries = [{"url": url} for url in read_urls(path)]
         if not entries:
             return False
+        # Search the whole download root (movie folders + flat files), not only
+        # output_root/channel — series episodes often land under the title folder.
         entries = store.reconcile_entries(
             entries,
-            os.path.join(root, channel),
+            root,
             store.archive_path(root, channel),
         )
         self._restoring_list = True
@@ -2753,12 +3064,14 @@ class MainWindow(QMainWindow):
             self.set_urls(entries)
         finally:
             self._restoring_list = False
+        self._remember_download_channel(channel)
         done = sum(1 for item in entries if item.get("status") == "done")
         pending = len(entries) - done
         self._append_log(
             f"Loaded {len(entries)} item(s)"
             + (f" — {done} done, {pending} remaining." if done else ".")
         )
+        self._sync_progress_disk_timer()
         return True
 
     def _open_folder(self):
@@ -3243,6 +3556,8 @@ class MainWindow(QMainWindow):
                 templates.setdefault(reel.url, reel)
         folders = self._kind_folders()
         folder_group = self._folder_group()
+        movie = series_folder_for_items(templates.values())
+        movie_dir = self._movie_save_dir(movie, default_dir or self._output_root()) if movie else ""
         entries = []
         for url, reel in templates.items():
             base = reel.as_entry()
@@ -3252,7 +3567,9 @@ class MainWindow(QMainWindow):
             kinds = kinds_by_url.get(url) or set(view_kinds) or {"video"}
             base["media_kinds"] = kinds
             base["image_quality"] = quality_by_url.get(url, "")
-            if not base.get("save_dir"):
+            if movie_dir:
+                base["save_dir"] = movie_dir
+            elif not base.get("save_dir"):
                 base["save_dir"] = default_dir
             for item in extract_package_rows(
                 base,
@@ -3303,6 +3620,72 @@ class MainWindow(QMainWindow):
             return list_url, True
         return None
 
+    def _movie_save_dir(self, movie, base=""):
+        """Absolute folder for a series title under the download root."""
+        movie = (movie or "").strip()
+        if not movie:
+            return (base or "").strip()
+        root = (base or "").strip() or self._output_root()
+        if movie.lower() in os.path.normpath(root).lower().split(os.sep):
+            return root
+        return os.path.join(root, movie)
+
+    def _expand_bilibili_seasons_in_downloads(self, urls):
+        """Replace season page rows with every episode; return updated URL list."""
+        seasons = [url for url in urls if is_bilibili_season_url(url)]
+        if not seasons:
+            return list(urls)
+        speed = self._speed()
+        kept = [url for url in urls if not is_bilibili_season_url(url)]
+        for season_url in seasons:
+            pkg = self.model.package_reel(season_url)
+            prior_dir = (pkg.save_dir if pkg else "") or self._output_root()
+            self._append_log(f"Expanding series into episodes: {season_url}")
+            try:
+                entries = list_bilibili_season_entries(
+                    season_url,
+                    log=self._append_log,
+                    cookies_browser=speed.get("cookies_browser", ""),
+                    cookies_file=speed.get("cookies_file", ""),
+                )
+            except Exception as exc:
+                self._append_log(f"Could not expand series: {exc}")
+                kept.append(season_url)
+                continue
+            if not entries:
+                kept.append(season_url)
+                continue
+            entries = group_series_entries(entries)
+            movie = series_folder_for_items(
+                [item for item in entries if not is_series_package(item)]
+            ) or series_folder_for_items([pkg] if pkg else [])
+            movie_dir = self._movie_save_dir(movie, prior_dir)
+            self.model.remove_urls([season_url])
+            rows = []
+            for entry in entries:
+                data = self._stamp_entry(entry)
+                data["status"] = "queued"
+                data["percent"] = 0
+                data["filepath"] = ""
+                if movie_dir:
+                    data["save_dir"] = movie_dir
+                rows.append(data)
+            self.model.add_entries(rows)
+            kept.extend(
+                entry["url"] for entry in entries
+                if entry.get("url") and not is_series_package(entry)
+            )
+            self._append_log(
+                f"Listed {sum(1 for item in entries if not is_series_package(item))} episode(s)"
+                + (f" → {movie}" if movie else "")
+                + "."
+            )
+        self._refresh_download_progress_from_disk()
+        self._sync_header_check()
+        self._update_counter()
+        self._schedule_store()
+        return kept
+
     def _start_download(self, ignore_checks=False):
         self.tabs.setCurrentIndex(TAB_DOWNLOAD)
         channel = self._channel()
@@ -3321,6 +3704,13 @@ class MainWindow(QMainWindow):
                 else "Every item in the list is already downloaded.",
             )
             return
+        urls = self._expand_bilibili_seasons_in_downloads(urls)
+        if not urls:
+            alert(
+                self, "warning", "Nothing to download",
+                "Could not list episodes for that series URL.",
+            )
+            return
         if selected is not None:
             self._append_log(f"Continuing {len(urls)} checked item(s).")
         elif self.model.counts().get("done"):
@@ -3333,7 +3723,7 @@ class MainWindow(QMainWindow):
         view_kinds = (
             self.views.checked_kinds() if hasattr(self, "views") else None
         ) or {"video"}
-        folders = {}
+        packages = []
         url_media_kinds = {}
         for row in range(self.model.rowCount()):
             reel = self.model.reel_at(row)
@@ -3348,20 +3738,30 @@ class MainWindow(QMainWindow):
                     url_media_kinds.setdefault(reel.url, set()).update(picked)
         for url in wanted:
             pkg = self.model.package_reel(url)
-            if pkg is None:
-                continue
+            if pkg is not None:
+                packages.append(pkg)
+        movie = series_folder_for_items(packages)
+        if movie and not self._settings.value("channel", "", str).strip():
+            channel = movie
+        self._remember_download_channel(channel)
+        folders = {}
+        for pkg in packages:
             dest = (pkg.save_dir or "").strip()
+            if movie:
+                dest = self._movie_save_dir(movie, dest or self._output_root())
             if per_link_folders:
-                name = source_folder_name(pkg.title, pkg.description, pkg.rid)
+                name = episode_leaf_name(
+                    pkg.title, pkg.description, pkg.rid, series=movie,
+                )
                 dest = os.path.join(dest, name) if dest else name
-            folders[url] = dest
-            if url not in url_media_kinds:
+            folders[pkg.url] = dest
+            if pkg.url not in url_media_kinds:
                 stored = set(pkg.media_kinds or ()) & view_kinds
-                url_media_kinds[url] = stored or set(view_kinds)
+                url_media_kinds[pkg.url] = stored or set(view_kinds)
             else:
-                url_media_kinds[url] = set(url_media_kinds[url]) & view_kinds
-                if not url_media_kinds[url]:
-                    url_media_kinds[url] = set(view_kinds)
+                url_media_kinds[pkg.url] = set(url_media_kinds[pkg.url]) & view_kinds
+                if not url_media_kinds[pkg.url]:
+                    url_media_kinds[pkg.url] = set(view_kinds)
         self._run(JobWorker(
             "download",
             channel,
@@ -3426,6 +3826,7 @@ class MainWindow(QMainWindow):
             if self._grabber_job
             else ("Extracting…" if self._collecting else "Downloading…")
         )
+        self._sync_progress_disk_timer()
         if self._collecting:
             if not self._grabber_job:
                 self._grab_close_timer.stop()
@@ -3494,6 +3895,7 @@ class MainWindow(QMainWindow):
                 "Delete leftover file(s) from disk?",
                 statuses=("failed", "cancelled"),
             )
+            self._refresh_download_progress_from_disk()
             self._notify_downloads_finished(message)
         if self._grabber_job:
             message = "Done" if not message else message
@@ -3778,6 +4180,10 @@ class MainWindow(QMainWindow):
         if getattr(self, "grab_panel", None):
             self.grab_panel.hide()
         self._stats_timer.stop()
+        if getattr(self, "_progress_ui_timer", None):
+            self._progress_ui_timer.stop()
+        if getattr(self, "_progress_disk_timer", None):
+            self._progress_disk_timer.stop()
         if getattr(self, "_app_update_timer", None):
             self._app_update_timer.stop()
         self._flush_store()

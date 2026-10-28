@@ -31,6 +31,7 @@ from app.core.urls import (
     collection_strategy,
     detect_platform,
     instagram_ytdlp_list_url,
+    is_bilibili_season_url,
     is_tiktok_user_feed,
     normalize_source_url,
     tiktok_sec_uid,
@@ -313,17 +314,93 @@ def _has_metadata(item):
     return bool(title and (item.get("uploader") or item.get("channel")))
 
 
+def _unsmuggle_entry(item):
+    """Copy title/id out of a yt-dlp smuggled playlist URL and drop the fragment."""
+    url = item.get("webpage_url") or item.get("url") or ""
+    if "#__youtubedl_smuggle=" not in str(url):
+        return item
+    data = {}
+    clean = str(url).split("#", 1)[0]
+    try:
+        from yt_dlp.utils import unsmuggle_url
+        clean, data = unsmuggle_url(url, {})
+    except Exception:
+        try:
+            encoded = str(url).split("#__youtubedl_smuggle=", 1)[1]
+            data = json.loads(unquote(encoded))
+        except (ValueError, IndexError):
+            data = {}
+    item = dict(item)
+    item["url"] = clean
+    item["webpage_url"] = clean
+    if isinstance(data, dict):
+        for key in ("title", "description", "thumbnail", "timestamp", "episode_number"):
+            if not item.get(key) and data.get(key) not in (None, ""):
+                item[key] = data[key]
+    return item
+
+
+def _with_series_title(item, series):
+    series = collapse_text(series)
+    if not series:
+        return item
+    item = dict(item)
+    if not item.get("uploader") and not item.get("channel"):
+        item["uploader"] = series
+    ep = collapse_text(item.get("title"))
+    if ep and ep.lower() != series.lower() and re.match(r"^(E|EP)\s*\d+", ep, re.I):
+        item["title"] = f"{series} {ep}"
+    return item
+
+
+# bilibili.tv "PV&More" tab: trailers/promos, not numbered episodes.
+_BILI_EXTRA_TITLE_RE = re.compile(
+    r"^(?:PV|CM|Trailer|Teaser|Preview|Promo)(?:\s*[-\d._]*)?$",
+    re.I,
+)
+
+
+def _bilibili_leaf_title(title, series=""):
+    title = collapse_text(title)
+    series = collapse_text(series)
+    if not title:
+        return ""
+    if series and title.lower().startswith(series.lower()):
+        rest = title[len(series):].strip(" -–—:")
+        if rest:
+            return rest
+    return title
+
+
+def _is_bilibili_extra_item(item, series=""):
+    """True for PV/trailer extras listed under a season playlist."""
+    leaf = _bilibili_leaf_title(item.get("title"), series)
+    if leaf and _BILI_EXTRA_TITLE_RE.match(leaf):
+        return True
+    return False
+
+
 def _flatten_entries(info, source_url):
     if not info:
         return []
+    series = info.get("title") if info.get("_type") == "playlist" else ""
     if info.get("_type") == "playlist":
-        found = []
-        for item in info.get("entries") or []:
-            if not item:
-                continue
-            found.append(item)
-        return found
-    return [info]
+        raw = info.get("entries") or []
+    else:
+        raw = [info]
+        series = ""
+    drop_extras = (
+        bool(series) and detect_platform(source_url or "") == "bilibili"
+    )
+    found = []
+    for item in raw:
+        if not item:
+            continue
+        item = _with_series_title(_unsmuggle_entry(item), series)
+        if drop_extras and _is_bilibili_extra_item(item, series):
+            continue
+        found.append(item)
+    return found
 
 
 def _tiktok_feed_url(url, log, cache_path=None, cookie_header=""):
@@ -408,9 +485,13 @@ def _collect_ytdlp(
                     raise _feed_error(url, exc, cache_path) from exc
             else:
                 raise _feed_error(url, exc, cache_path) from exc
+        listed = sum(1 for item in (info.get("entries") or []) if item) if info else 0
         raw = _flatten_entries(info, url)
         if not raw:
             raise _feed_error(url, cache_path=cache_path)
+        skipped_extras = listed - len(raw) if detect_platform(url) == "bilibili" else 0
+        if skipped_extras > 0:
+            log(f"Skipped {skipped_extras} PV/extra item(s).")
         for item in raw:
             _remember_from_info(item, cache_path)
         pending = sum(1 for item in raw if not _has_metadata(item))
@@ -454,17 +535,81 @@ def _collect_ytdlp(
                 log(f"Metadata {done}/{pending}")
         return _unique_entries(entries)
 
+    # Bilibili.tv /play/{season} still returns a playlist even with noplaylist.
+    if is_bilibili_season_url(url):
+        return _collect_ytdlp(
+            url,
+            log=log,
+            should_stop=should_stop,
+            cookies_browser=cookies_browser,
+            ydl_cls=ydl_cls,
+            sleep=sleep,
+            cache_path=cache_path,
+            feed=True,
+            on_entries=on_entries,
+            cookies_file=cookies_file,
+            dateafter=dateafter,
+        )
+
     log("Reading post info…")
     # A watch URL can carry a playlist; collecting one post must stay one post.
     opts["noplaylist"] = True
     info = _extract(ydl_cls, url, opts, should_stop)
+    # Season pages sometimes slip through as SINGLE; never keep the season URL alone.
+    if info and info.get("_type") == "playlist" and is_bilibili_season_url(url):
+        return _collect_ytdlp(
+            url,
+            log=log,
+            should_stop=should_stop,
+            cookies_browser=cookies_browser,
+            ydl_cls=ydl_cls,
+            sleep=sleep,
+            cache_path=cache_path,
+            feed=True,
+            on_entries=on_entries,
+            cookies_file=cookies_file,
+            dateafter=dateafter,
+        )
     items = _flatten_entries(info, url)
+    if (
+        info
+        and info.get("_type") == "playlist"
+        and detect_platform(url) == "bilibili"
+        and len(items) > 1
+    ):
+        log(f"Series playlist returned {len(items)} episode(s); listing them.")
+        entries = []
+        for item in items:
+            item_url = item.get("webpage_url") or item.get("url") or ""
+            if not item_url or not str(item_url).startswith("http"):
+                continue
+            entry = entry_from_info(item, item_url)
+            entries.append(entry)
+            _push_entries(on_entries, [entry])
+        entries = _unique_entries(entries)
+        if entries:
+            return entries
     for item in items:
         _remember_from_info(item, cache_path)
     entries = [entry_from_info(item, url) for item in items if item]
     entries = _unique_entries(entries)
     _push_entries(on_entries, entries)
     return entries
+
+
+def list_bilibili_season_entries(
+    url, *, log=None, should_stop=None, ydl_cls=None, cookies_browser="", cookies_file="",
+):
+    """Expand a bilibili.tv season URL into episode table rows (no CSV write)."""
+    return _collect_ytdlp(
+        url,
+        log=log or (lambda *_: None),
+        should_stop=should_stop,
+        cookies_browser=cookies_browser,
+        ydl_cls=ydl_cls,
+        feed=True,
+        cookies_file=cookies_file,
+    )
 
 
 def _pinterest_path_segments(url):

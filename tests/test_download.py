@@ -31,6 +31,11 @@ from app.core.download import (
     resolve_filename_template,
     resolve_item_dir,
     reel_id,
+    episode_leaf_name,
+    _expand_bilibili_season_downloads,
+    group_series_entries,
+    is_series_package,
+    series_folder_for_items,
     source_folder_name,
     twitter_status_id,
 )
@@ -388,6 +393,132 @@ class SourceFolderName(unittest.TestCase):
     def test_empty_without_rid_is_hex_only(self):
         name = source_folder_name("", "", "")
         self.assertRegex(name, r"^[0-9a-f]{8}$")
+
+
+class SeriesFolderForItems(unittest.TestCase):
+    def test_shared_episode_titles_use_movie_name(self):
+        self.assertEqual(
+            series_folder_for_items([
+                {"title": "Tales of Herding Gods E1", "uploader": "Bstation"},
+                {"title": "Tales of Herding Gods E2", "uploader": "Bstation"},
+            ]),
+            "Tales of Herding Gods",
+        )
+
+    def test_single_episode_title_still_nests_under_movie(self):
+        self.assertEqual(
+            series_folder_for_items([
+                {"title": "Tales of Herding Gods E1", "uploader": "Bstation"},
+            ]),
+            "Tales of Herding Gods",
+        )
+
+    def test_bilibili_play_episodes_fall_back_to_uploader(self):
+        self.assertEqual(
+            series_folder_for_items([
+                {
+                    "title": "E1",
+                    "uploader": "Tales of Herding Gods",
+                    "url": "https://www.bilibili.tv/en/play/2117053/13436346",
+                },
+                {
+                    "title": "E2",
+                    "uploader": "Tales of Herding Gods",
+                    "url": "https://www.bilibili.tv/en/play/2117053/13436492",
+                },
+            ]),
+            "Tales of Herding Gods",
+        )
+
+    def test_bilibili_season_page_uses_title_as_movie_folder(self):
+        self.assertEqual(
+            series_folder_for_items([{
+                "title": "Tales of Herding Gods",
+                "url": "https://www.bilibili.tv/en/play/2117053",
+            }]),
+            "Tales of Herding Gods",
+        )
+
+    def test_unrelated_posts_do_not_get_a_series_folder(self):
+        self.assertEqual(
+            series_folder_for_items([
+                {"title": "Sunset", "uploader": "Ada"},
+                {"title": "Ocean", "uploader": "Ada"},
+            ]),
+            "",
+        )
+
+    def test_episode_leaf_prefers_ep_label(self):
+        self.assertEqual(
+            episode_leaf_name(
+                "Tales of Herding Gods E1",
+                "",
+                "13436346",
+                series="Tales of Herding Gods",
+            ),
+            "E1",
+        )
+
+    def test_expand_season_download_builds_movie_folders(self):
+        entries = [
+            {
+                "url": "https://www.bilibili.tv/en/play/2117053/1",
+                "id": "1",
+                "title": "Tales of Herding Gods E1",
+                "uploader": "Tales of Herding Gods",
+            },
+            {
+                "url": "https://www.bilibili.tv/en/play/2117053/2",
+                "id": "2",
+                "title": "Tales of Herding Gods E2",
+                "uploader": "Tales of Herding Gods",
+            },
+        ]
+        with patch(
+            "app.core.collect.list_bilibili_season_entries",
+            return_value=entries,
+        ):
+            urls, folders = _expand_bilibili_season_downloads(
+                ["https://www.bilibili.tv/en/play/2117053"],
+                {},
+                log=lambda *_: None,
+            )
+        self.assertEqual(
+            urls,
+            [
+                "https://www.bilibili.tv/en/play/2117053/1",
+                "https://www.bilibili.tv/en/play/2117053/2",
+            ],
+        )
+        self.assertEqual(folders[urls[0]], "Tales of Herding Gods")
+        self.assertEqual(folders[urls[1]], "Tales of Herding Gods")
+
+    def test_group_series_entries_adds_movie_package(self):
+        grouped = group_series_entries([
+            {
+                "url": "https://www.bilibili.tv/en/play/2129061/13765998",
+                "id": "13765998",
+                "title": "Back as Immortal Lord E1",
+                "uploader": "Back as Immortal Lord",
+            },
+            {
+                "url": "https://www.bilibili.tv/en/play/2129061/13766000",
+                "id": "13766000",
+                "title": "Back as Immortal Lord E2",
+                "uploader": "Back as Immortal Lord",
+            },
+        ])
+        self.assertTrue(is_series_package(grouped[0]))
+        self.assertEqual(grouped[0]["title"], "Back as Immortal Lord")
+        self.assertEqual(grouped[0]["url"], "https://www.bilibili.tv/en/play/2129061")
+        self.assertEqual(len(grouped), 3)
+        self.assertEqual(grouped[1]["series"], "Back as Immortal Lord")
+        self.assertEqual(
+            episode_leaf_name(
+                grouped[1]["title"], "", grouped[1]["id"], series=grouped[1]["series"],
+            ),
+            "E1",
+        )
 
 
 class MediaKindArgs(unittest.TestCase):

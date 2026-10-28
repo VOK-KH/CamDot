@@ -1,14 +1,21 @@
 """Tree view adapter: package rows with Video / Audio / Image children."""
 from PySide6.QtCore import QAbstractProxyModel, QModelIndex, Qt
 
+from app.core.download import is_series_package
+
 
 class _TreeNode:
-    __slots__ = ("flat_row", "parent", "children")
+    __slots__ = ("flat_row", "key", "parent", "children")
 
-    def __init__(self, flat_row, parent=None):
+    def __init__(self, flat_row, key, parent=None):
         self.flat_row = flat_row
+        self.key = key
         self.parent = parent
         self.children = []
+
+
+def _reel_key(reel):
+    return (reel.url, reel.variant or "")
 
 
 class ReelTreeProxy(QAbstractProxyModel):
@@ -65,34 +72,80 @@ class ReelTreeProxy(QAbstractProxyModel):
             return False
         return source.filterAcceptsRow(src_row, QModelIndex())
 
-    def _register(self, node):
-        self._nodes[id(node)] = node
-        return id(node)
+    def _build_tree(self):
+        """Return (roots, nodes) for the current flat model without touching the view."""
+        roots = []
+        nodes = {}
+        model = self._reel_model()
+        if model is None:
+            return roots, nodes
+
+        packages = {}
+        series_packages = {}
+        visible = [
+            src_row for src_row in range(model.rowCount())
+            if self._visible(src_row)
+        ]
+
+        def register(node):
+            nodes[id(node)] = node
+            return node
+
+        for src_row in visible:
+            reel = model.reel_at(src_row)
+            if not is_series_package(reel):
+                continue
+            node = register(_TreeNode(src_row, _reel_key(reel)))
+            key = reel.series_url or reel.url
+            series_packages[key] = node
+            packages[reel.url] = node
+            roots.append(node)
+
+        for src_row in visible:
+            reel = model.reel_at(src_row)
+            if is_series_package(reel):
+                continue
+            if reel.variant and self._folder_group:
+                parent = packages.get(reel.url)
+                if parent is None:
+                    continue
+                node = register(_TreeNode(src_row, _reel_key(reel), parent))
+                parent.children.append(node)
+                continue
+            series_key = getattr(reel, "series_url", "") or ""
+            if series_key and series_key in series_packages:
+                parent = series_packages[series_key]
+                node = register(_TreeNode(src_row, _reel_key(reel), parent))
+                parent.children.append(node)
+                packages[reel.url] = node
+                continue
+            node = register(_TreeNode(src_row, _reel_key(reel)))
+            if self._folder_group and not reel.variant:
+                packages[reel.url] = node
+            roots.append(node)
+        return roots, nodes
+
+    @staticmethod
+    def _topology(roots):
+        def walk(nodes):
+            return tuple((node.key, walk(node.children)) for node in nodes)
+
+        return walk(roots)
+
+    def _patch_flat_rows(self, old_roots, new_roots):
+        for old, new in zip(old_roots, new_roots):
+            old.flat_row = new.flat_row
+            self._patch_flat_rows(old.children, new.children)
 
     def _rebuild(self, *_args):
+        new_roots, new_nodes = self._build_tree()
+        # Same nesting → update row pointers only (keeps expand + scroll).
+        if self._roots and self._topology(self._roots) == self._topology(new_roots):
+            self._patch_flat_rows(self._roots, new_roots)
+            return
         self.beginResetModel()
-        self._roots = []
-        self._nodes = {}
-        model = self._reel_model()
-        if model is not None:
-            packages = {}
-            for src_row in range(model.rowCount()):
-                if not self._visible(src_row):
-                    continue
-                reel = model.reel_at(src_row)
-                if reel.variant and self._folder_group:
-                    parent = packages.get(reel.url)
-                    if parent is None:
-                        continue
-                    node = _TreeNode(src_row, parent)
-                    parent.children.append(node)
-                    self._register(node)
-                else:
-                    node = _TreeNode(src_row)
-                    if self._folder_group and not reel.variant:
-                        packages[reel.url] = node
-                    self._roots.append(node)
-                    self._register(node)
+        self._roots = new_roots
+        self._nodes = new_nodes
         self.endResetModel()
 
     def rowCount(self, parent=QModelIndex()):

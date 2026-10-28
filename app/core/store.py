@@ -167,8 +167,24 @@ def forget_archive_ids(path, rids):
         f.writelines(keep)
 
 
+def _lookup_output(rid, *roots, partial=False):
+    """Search each root (and its subfolders) for a finished or .part file."""
+    for root in roots:
+        root = (root or "").strip()
+        if not root:
+            continue
+        found = find_output_file(root, rid, partial=partial)
+        if found:
+            return found
+    return ""
+
+
 def reconcile_entries(entries, output_dir, archive_file=None):
-    """Mark finished files done and keep percent for leftover .part files."""
+    """Mark finished files done and keep percent for leftover .part files.
+
+    Looks in each row's ``save_dir`` first (movie/series folders), then
+    ``output_dir`` / channel folder, so progress reloads after restart.
+    """
     archive = read_archive_ids(archive_file or os.path.join(output_dir, ARCHIVE_NAME))
     reconciled = []
     for entry in entries:
@@ -176,12 +192,15 @@ def reconcile_entries(entries, output_dir, archive_file=None):
         url = item.get("url") or ""
         rid = str(item.get("id") or reel_id(url))
         item["id"] = rid
-        finished = find_output_file(output_dir, rid, partial=False)
-        part = find_output_file(output_dir, rid, partial=True)
+        save_dir = (item.get("save_dir") or "").strip()
+        finished = _lookup_output(rid, save_dir, output_dir, partial=False)
+        part = _lookup_output(rid, save_dir, output_dir, partial=True)
         if finished:
             item["status"] = "done"
             item["percent"] = 100.0
             item["filepath"] = finished
+            if not save_dir:
+                item["save_dir"] = os.path.dirname(finished)
         elif rid in archive:
             item["status"] = "done"
             item["percent"] = 100.0
@@ -189,6 +208,8 @@ def reconcile_entries(entries, output_dir, archive_file=None):
             item["status"] = freeze_status(item.get("status") or "queued")
             if part:
                 item["filepath"] = part
+                if not save_dir:
+                    item["save_dir"] = os.path.dirname(part)
                 total = item.get("total")
                 try:
                     size = os.path.getsize(part)
