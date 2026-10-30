@@ -4,6 +4,7 @@ import os
 
 from app.core.download import reel_id
 from app.core.runtime import channel_state_dir
+from app.core.web_media import mp4_video_info, resolution_label
 
 LIST_NAME = "list.json"
 ARCHIVE_NAME = ".downloaded.txt"
@@ -69,13 +70,22 @@ def _matches_id(name, rid):
     return f"[{rid}]" in name or name.startswith(f"{rid}.") or name.startswith(f"{rid} ")
 
 
-def _find_in_dir(folder, rid, partial=False):
-    if not rid or not os.path.isdir(folder):
+def _find_in_dir(folder, rid, partial=False, dir_cache=None):
+    if not rid or not folder:
         return ""
-    try:
-        names = os.listdir(folder)
-    except OSError:
-        return ""
+    if dir_cache is not None and folder in dir_cache:
+        names = dir_cache[folder]
+    else:
+        if not os.path.isdir(folder):
+            if dir_cache is not None:
+                dir_cache[folder] = ()
+            return ""
+        try:
+            names = tuple(os.listdir(folder))
+        except OSError:
+            names = ()
+        if dir_cache is not None:
+            dir_cache[folder] = names
     for name in names:
         is_part = name.endswith(".part")
         if partial != is_part:
@@ -87,29 +97,36 @@ def _find_in_dir(folder, rid, partial=False):
     return ""
 
 
-def _iter_search_dirs(output_dir):
-    yield output_dir
-    if not os.path.isdir(output_dir):
+def _iter_search_dirs(output_dir, subdirs_cache=None):
+    if not output_dir:
         return
-    try:
-        for name in os.listdir(output_dir):
-            path = os.path.join(output_dir, name)
-            if os.path.isdir(path):
-                yield path
-                try:
-                    for sub in os.listdir(path):
-                        subpath = os.path.join(path, sub)
-                        if os.path.isdir(subpath):
-                            yield subpath
-                except OSError:
-                    continue
-    except OSError:
+    if subdirs_cache is not None and output_dir in subdirs_cache:
+        yield from subdirs_cache[output_dir]
         return
+    found = [output_dir]
+    if os.path.isdir(output_dir):
+        try:
+            for name in os.listdir(output_dir):
+                path = os.path.join(output_dir, name)
+                if os.path.isdir(path):
+                    found.append(path)
+                    try:
+                        for sub in os.listdir(path):
+                            subpath = os.path.join(path, sub)
+                            if os.path.isdir(subpath):
+                                found.append(subpath)
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+    if subdirs_cache is not None:
+        subdirs_cache[output_dir] = tuple(found)
+    yield from found
 
 
-def find_output_file(output_dir, rid, partial=False):
-    for folder in _iter_search_dirs(output_dir):
-        found = _find_in_dir(folder, rid, partial=partial)
+def find_output_file(output_dir, rid, partial=False, dir_cache=None, subdirs_cache=None):
+    for folder in _iter_search_dirs(output_dir, subdirs_cache=subdirs_cache):
+        found = _find_in_dir(folder, rid, partial=partial, dir_cache=dir_cache)
         if found:
             return found
     return ""
@@ -167,13 +184,15 @@ def forget_archive_ids(path, rids):
         f.writelines(keep)
 
 
-def _lookup_output(rid, *roots, partial=False):
+def _lookup_output(rid, *roots, partial=False, dir_cache=None, subdirs_cache=None):
     """Search each root (and its subfolders) for a finished or .part file."""
     for root in roots:
         root = (root or "").strip()
         if not root:
             continue
-        found = find_output_file(root, rid, partial=partial)
+        found = find_output_file(
+            root, rid, partial=partial, dir_cache=dir_cache, subdirs_cache=subdirs_cache,
+        )
         if found:
             return found
     return ""
@@ -186,6 +205,8 @@ def reconcile_entries(entries, output_dir, archive_file=None):
     ``output_dir`` / channel folder, so progress reloads after restart.
     """
     archive = read_archive_ids(archive_file or os.path.join(output_dir, ARCHIVE_NAME))
+    dir_cache = {}
+    subdirs_cache = {}
     reconciled = []
     for entry in entries:
         item = dict(entry)
@@ -193,14 +214,43 @@ def reconcile_entries(entries, output_dir, archive_file=None):
         rid = str(item.get("id") or reel_id(url))
         item["id"] = rid
         save_dir = (item.get("save_dir") or "").strip()
-        finished = _lookup_output(rid, save_dir, output_dir, partial=False)
-        part = _lookup_output(rid, save_dir, output_dir, partial=True)
+        existing_fp = (item.get("filepath") or "").strip()
+        if (
+            existing_fp
+            and not existing_fp.endswith(SKIP_SUFFIXES)
+            and os.path.isfile(existing_fp)
+        ):
+            finished = existing_fp
+            part = ""
+        else:
+            finished = _lookup_output(
+                rid, save_dir, output_dir,
+                partial=False, dir_cache=dir_cache, subdirs_cache=subdirs_cache,
+            )
+            part = "" if finished else _lookup_output(
+                rid, save_dir, output_dir,
+                partial=True, dir_cache=dir_cache, subdirs_cache=subdirs_cache,
+            )
         if finished:
             item["status"] = "done"
             item["percent"] = 100.0
             item["filepath"] = finished
             if not save_dir:
                 item["save_dir"] = os.path.dirname(finished)
+            if not item.get("total"):
+                try:
+                    size = os.path.getsize(finished)
+                    if size > 0:
+                        item["total"] = size
+                except OSError:
+                    pass
+            if not item.get("duration") or not item.get("quality"):
+                dur, w, h = mp4_video_info(finished)
+                if dur and not item.get("duration"):
+                    item["duration"] = dur
+                qual = resolution_label(w, h, finished)
+                if qual and not item.get("quality"):
+                    item["quality"] = qual
         elif rid in archive:
             item["status"] = "done"
             item["percent"] = 100.0

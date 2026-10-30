@@ -1,13 +1,17 @@
-"""Generate the UI icon set into images/icons/.
+"""Generate the UI icon set into images/icons/ and sync platform logos into images/icons/platforms/.
 
-The icons are plain stroked SVGs on a 24x24 grid that use `currentColor`, so
-app/core/icons.py can recolor them for the light and dark themes. Run after editing:
+The UI icons are stroked SVGs on a 24x24 grid that use `currentColor`, so
+app/core/icons.py can recolor them for light and dark themes. Provider PNG
+logos are pulled into images/icons/platforms/ for drama and social hosts.
 
+Run after editing:
     uv run python tools/make_icons.py
 """
 import os
+import urllib.request
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "images", "icons")
+PLATFORMS_DIR = os.path.join(OUT_DIR, "platforms")
 
 TEMPLATE = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"'
@@ -155,6 +159,7 @@ ICONS = {
         '<line x1="7" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="17" y2="20"/>'
         '<polygon points="10.5 9 15 12 10.5 15" fill="currentColor"/>'
     ),
+    # platform SVGs
     "platform-facebook": (
         '<circle cx="12" cy="12" r="10"/>'
         '<path d="M13 8h2V6h-2c-1.7 0-3 1.3-3 3v2H8v2h2v6h2v-6h2l.5-2H12V9c0-.6.4-1 1-1z"/>'
@@ -194,11 +199,151 @@ ICONS = {
         '<path d="M12 7v7"/><circle cx="12" cy="8.5" r="0.5" fill="currentColor"/>'
         '<path d="M10 17c1-3 2-4 2-6"/>'
     ),
+    "platform-snackvideo": (
+        '<rect x="3" y="4" width="18" height="16" rx="5"/>'
+        '<polygon points="10 8.5 16 12 10 15.5" fill="currentColor"/>'
+    ),
+    "platform-xiaohongshu": (
+        '<rect x="3" y="4" width="18" height="16" rx="4"/>'
+        '<path d="M7 9v6"/><path d="M12 8v8"/><path d="M17 9v6"/>'
+        '<line x1="7" y1="12" x2="17" y2="12"/>'
+    ),
+    "platform-medaltv": (
+        '<circle cx="12" cy="14" r="6"/>'
+        '<path d="M8 3h8l-2 5h-4z"/>'
+        '<polygon points="10.5 11.5 14.5 14 10.5 16.5" fill="currentColor"/>'
+    ),
+    "platform-threads": (
+        '<circle cx="12" cy="12" r="9"/>'
+        '<path d="M15.5 10.5c0-2-1.5-3.5-3.5-3.5s-3.5 1.5-3.5 3.5 1.5 3.5 3.5 3.5c1.8 0 3.2-1 3.5-2.5"/>'
+        '<path d="M15.5 12v1.5a2 2 0 0 0 3.5 1"/>'
+    ),
+    "platform-suno": (
+        '<path d="M9 18V5l12-2v13"/>'
+        '<circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'
+    ),
+    "platform-reddit": (
+        '<circle cx="12" cy="13" r="7"/>'
+        '<circle cx="9.5" cy="12" r="1" fill="currentColor"/>'
+        '<circle cx="14.5" cy="12" r="1" fill="currentColor"/>'
+        '<path d="M9.5 15.5c1.5 1 3.5 1 5 0"/>'
+        '<path d="M12 6l2-3 3 1"/><circle cx="18" cy="4" r="1"/>'
+    ),
+    "platform-dailymotion": (
+        '<rect x="3" y="4" width="18" height="16" rx="3"/>'
+        '<path d="M14 7v10"/><circle cx="11" cy="13.5" r="3"/>'
+    ),
+    "platform-snapchat": (
+        '<path d="M12 4c-3.5 0-5.5 2.5-5.5 6v2c-1 .5-2 1-2 1.8 0 .8 1.5 1.2 2.5 1.5'
+        '.3 1.5 1.5 2.7 5 2.7s4.7-1.2 5-2.7c1-.3 2.5-.7 2.5-1.5 0-.8-1-1.3-2-1.8v-2'
+        'c0-3.5-2-6-5.5-6z"/>'
+    ),
+    "platform-weibo": (
+        '<ellipse cx="11" cy="14" rx="7" ry="5"/>'
+        '<circle cx="10" cy="14" r="1.5" fill="currentColor"/>'
+        '<path d="M15 6a5 5 0 0 1 4 4"/><path d="M14 3a8 8 0 0 1 7 7"/>'
+    ),
+    "platform-twitch": (
+        '<path d="M21 2H3v16h5v4l4-4h5l4-4V2z"/>'
+        '<line x1="11" y1="7" x2="11" y2="12"/><line x1="16" y1="7" x2="16" y2="12"/>'
+    ),
+    "platform-scraped": (
+        '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>'
+        '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'
+        '<polyline points="15 16 18 19 21 16"/><line x1="18" y1="12" x2="18" y2="19"/>'
+    ),
     "platform-generic": (
         '<rect x="3" y="5" width="18" height="14" rx="2"/>'
         '<polygon points="10 9 16 12 10 15" fill="currentColor"/>'
     ),
 }
+
+QUICKPLAY_LOGOS = (
+    "melolo", "wetv", "freereels", "meloshort", "reelshort", "reelife",
+    "dramawave", "stardusttv", "netshort", "goodshort", "shortmax", "flickreels",
+    "flextv", "dramarush", "rapidtv", "dramanova", "fundrama", "starshort",
+    "dramapops", "snackshort", "dramabite", "sodareels", "bilitv", "idrama",
+    "cubetv", "shortwave", "reelala", "shotshort", "microdrama", "radreels",
+    "sereal", "cashdrama", "flickshort", "dotdrama", "dramabox", "moboreels",
+    "sarostv", "vigloo", "velolo", "shortbox", "pinedrama", "bstation",
+    "luminareels", "shortsky", "bonustv", "vibeshort", "dramaverse",
+    "storyreel", "lupacine",
+)
+
+DASHBOARD_ICONS_PNG = {
+    "facebook": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/facebook.png",
+    "instagram": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/instagram.png",
+    "pinterest": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/pinterest.png",
+    "youtube": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/youtube.png",
+    "tiktok": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/tiktok-light.png",
+    "threads": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/threads-light.png",
+    "twitter": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/x-light.png",
+    "reddit": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/reddit.png",
+    "bilibili": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/bilibili.png",
+    "snapchat": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/snapchat.png",
+    "twitch": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/twitch.png",
+    "scraped": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons@main/png/yt-dlp.png",
+}
+
+FAVICON_FALLBACK_DOMAINS = {
+    "iqiyi": "iq.com",
+    "kisskh": "kisskh.co",
+    "hongguo": "hongguoduanju.com",
+    "kolabkhmer": "kolabkhmer.com",
+    "snackvideo": "snackvideo.com",
+    "xiaohongshu": "xiaohongshu.com",
+    "medaltv": "medal.tv",
+    "threads": "threads.com",
+    "suno": "suno.com",
+    "reddit": "reddit.com",
+    "dailymotion": "dailymotion.com",
+}
+
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+
+
+def _download_file(url, dest):
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = resp.read()
+    if data:
+        with open(dest, "wb") as f:
+            f.write(data)
+        return True
+    return False
+
+
+def sync_platform_logos():
+    os.makedirs(PLATFORMS_DIR, exist_ok=True)
+    fetched = 0
+    for name, url in DASHBOARD_ICONS_PNG.items():
+        dest = os.path.join(PLATFORMS_DIR, f"{name}.png")
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            continue
+        try:
+            if _download_file(url, dest):
+                fetched += 1
+        except Exception:
+            pass
+    for name in QUICKPLAY_LOGOS:
+        dest = os.path.join(PLATFORMS_DIR, f"{name}.png")
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            continue
+        try:
+            if _download_file(f"https://api.quickplay.my.id/logo/{name}.png", dest):
+                fetched += 1
+        except Exception:
+            pass
+    for name, domain in FAVICON_FALLBACK_DOMAINS.items():
+        dest = os.path.join(PLATFORMS_DIR, f"{name}.png")
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            continue
+        try:
+            if _download_file(f"https://www.google.com/s2/favicons?domain={domain}&sz=64", dest):
+                fetched += 1
+        except Exception:
+            pass
+    return fetched
 
 
 def main():
@@ -207,7 +352,8 @@ def main():
         path = os.path.join(OUT_DIR, f"{name}.svg")
         with open(path, "w", encoding="utf-8") as f:
             f.write(TEMPLATE.format(body=body))
-    print(f"wrote {len(ICONS)} icons to {OUT_DIR}")
+    pulled = sync_platform_logos()
+    print(f"wrote {len(ICONS)} SVG icons to {OUT_DIR} (pulled {pulled} new platform PNGs)")
 
 
 if __name__ == "__main__":

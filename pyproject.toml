@@ -18,6 +18,7 @@ Changelog = "https://github.com/VOK-KH/CamDot/releases"
 
 [project.scripts]
 camdot = "app.main:main"
+comdot = "app.main:main"
 camdot-gui = "app.gui:main"
 camdot-setup = "app.core.runtime:setup_main"
 

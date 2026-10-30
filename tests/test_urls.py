@@ -45,7 +45,7 @@ class ClipboardUrls(unittest.TestCase):
     def test_generic_and_unknown_hosts_are_not_extracted(self):
         self.assertEqual(
             extract_supported_urls(
-                "https://fewfeed.app https://www.dramabox.com/watch/abc ftp://x.com/nope"
+                "https://fewfeed.app https://unknown-example.invalid/watch/abc ftp://x.com/nope"
             ),
             [],
         )
@@ -214,11 +214,45 @@ class DetectPlatform(unittest.TestCase):
             "https://www.douyin.com/video/7683008214744581018": "douyin",
             "https://v.douyin.com/abc123": "douyin",
             "https://www.kuaishou.com/short-video/1": "kuaishou",
+            "https://www.kwai.com/@user/video/1": "kwai",
+            "https://www.snackvideo.com/@user/video/1": "snackvideo",
             "https://www.pinterest.com/pin/123": "pinterest",
+            "https://www.xiaohongshu.com/explore/123": "xiaohongshu",
+            "https://medal.tv/games/valorant/clips/abc": "medaltv",
             "https://www.threads.net/@user/post/1": "threads",
+            "https://www.threads.com/@user/post/1": "threads",
+            "https://suno.com/song/12345678-1234-1234-1234-1234567890ab": "suno",
             "https://www.reddit.com/r/test/comments/abc/title/": "reddit",
+            "https://www.dailymotion.com/video/x8abc": "dailymotion",
+            "https://dai.ly/x8abc": "dailymotion",
             "https://www.twitch.tv/videos/123": "twitch",
-            "https://www.dramabox.com/watch/abc": "generic",
+            "https://www.dramaboxdb.com/movie/123": "dramabox",
+            "https://www.dramabox.com/watch/abc": "dramabox",
+            "https://www.netshort.com/episode/1": "netshort",
+            "https://www.flickreels.net/drama/1": "flickreels",
+            "https://www.stardusttv.net/series/1": "stardusttv",
+            "https://www.starshort.tv/drama/1": "starshort",
+            "https://www.goodshort.com/drama/1": "goodshort",
+            "https://www.mydramawave.com/drama/1": "dramawave",
+            "https://www.free-reels.com/drama/1": "freereels",
+            "https://www.reelshort.com/episodes/ep-1": "reelshort",
+            "https://www.hongguoduanju.com/drama/1": "hongguo",
+            "https://www.idrama.video/drama/1": "idrama",
+            "https://www.bilitv.com/play/1": "bilitv",
+            "https://wetv.vip/en/play/abc": "wetv",
+            "https://www.iq.com/play/abc": "iqiyi",
+            "https://www.dramabite.media/drama/1": "dramabite",
+            "https://www.vigloo.com/drama/1": "vigloo",
+            "https://kisskh.org/Drama/Title": "kisskh",
+            "https://kisskh.ovh/Drama/Title": "kisskh",
+            "https://kisskh.co/Drama/Title": "kisskh",
+            "https://kisskh.do/Drama/Title": "kisskh",
+            "https://www.flextv.cc/drama/1": "flextv",
+            "https://melolo.org/drama/1": "melolo",
+            "https://www.kolabkhmer.com/drama/1": "kolabkhmer",
+            "https://cdn.example-stream.org/videos/clip.mp4": "scraped",
+            "https://cdn.example-stream.org/hls/master.m3u8": "scraped",
+            "https://unknown-example.invalid/page/abc": "generic",
         }
         for url, platform in cases.items():
             with self.subTest(url=url):
@@ -333,6 +367,21 @@ class ClassifySource(unittest.TestCase):
         self.assertEqual(classify_source("https://www.pinterest.com/mocute4u/"), FEED)
         self.assertEqual(classify_source("https://www.pinterest.com/ideas/"), SINGLE)
         self.assertEqual(classify_source("https://www.pinterest.com/search/pins/"), SINGLE)
+        self.assertEqual(
+            classify_source("https://www.pinterest.com/search/pins/?q=anime"), FEED
+        )
+        self.assertEqual(
+            classify_source("https://www.pinterest.com/pin/123456/related/"), FEED
+        )
+        self.assertEqual(
+            classify_source("https://www.pinterest.com/pin/123456/?related=1"), FEED
+        )
+
+    def test_drama_and_suno_classification(self):
+        self.assertEqual(classify_source("https://www.dramaboxdb.com/drama/123"), FEED)
+        self.assertEqual(classify_source("https://www.dramaboxdb.com/episode/123"), SINGLE)
+        self.assertEqual(classify_source("https://suno.com/song/12345678-1234-1234-1234-1234567890ab"), SINGLE)
+        self.assertEqual(classify_source("https://suno.com/playlist/12345678-1234-1234-1234-1234567890ab"), FEED)
 
 
 class NormalizeSourceUrl(unittest.TestCase):
@@ -377,11 +426,13 @@ class NormalizeSourceUrl(unittest.TestCase):
 
     def test_generic_https_is_not_processed(self):
         self.assertFalse(is_supported_source("https://fewfeed.app"))
-        self.assertFalse(is_supported_source("https://www.dramabox.com/watch/abc"))
+        self.assertFalse(is_supported_source("https://unknown-example.invalid/watch/abc"))
+        self.assertTrue(is_supported_source("https://www.dramaboxdb.com/watch/abc"))
+        self.assertTrue(is_supported_source("https://cdn.example-stream.org/video/ep1.mp4"))
         with self.assertRaises(ValueError):
             normalize_source_url("https://fewfeed.app")
         with self.assertRaises(ValueError):
-            normalize_source_url("https://www.dramabox.com/watch/abc")
+            normalize_source_url("https://unknown-example.invalid/watch/abc")
 
     def test_facebook_page_id_becomes_a_profile_url(self):
         self.assertEqual(

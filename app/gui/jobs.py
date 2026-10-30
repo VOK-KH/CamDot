@@ -27,7 +27,7 @@ class JobWorker(QObject):
         ffmpeg_location="", cookies_browser="", feed=None, filename_template="",
         cookies_file="", dateafter="", limit_rate="",
         media_kinds=None, source_folders=None, group_by_source=True,
-        url_media_kinds=None, kind_folders=None,
+        url_media_kinds=None, kind_folders=None, video_quality="", gpu_accel="",
     ):
         super().__init__()
         self.mode = mode
@@ -50,6 +50,8 @@ class JobWorker(QObject):
         self.group_by_source = group_by_source
         self.url_media_kinds = url_media_kinds or {}
         self.kind_folders = kind_folders or {}
+        self.video_quality = video_quality
+        self.gpu_accel = gpu_accel
         self._stop = False
         self._login = threading.Event()
         self._last_emit = {}
@@ -148,6 +150,8 @@ class JobWorker(QObject):
                 group_by_source=self.group_by_source,
                 url_media_kinds=self.url_media_kinds,
                 kind_folders=self.kind_folders,
+                video_quality=self.video_quality,
+                gpu_accel=self.gpu_accel,
             )
             self.finished.emit("" if not failures else f"{failures} item(s) failed.")
         except StopRequested:

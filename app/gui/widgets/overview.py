@@ -72,6 +72,8 @@ class OverviewPanel(QWidget):
         while self.grid.count():
             widget = self.grid.takeAt(0).widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
         self._values = {}
         # A value that grows must not shove its neighbours sideways every tick.

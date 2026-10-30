@@ -10,8 +10,9 @@ from PySide6.QtGui import QColor
 
 from app.core import icons, platform_icons, theme
 from app.core.i18n import tr
-from app.core.download import episode_leaf_name, is_series_package, post_label, reel_id
-from app.core.urls import detect_platform
+from app.core.download import collapse_text, episode_leaf_name, is_series_package, post_label, reel_id
+from app.core.urls import MOVIE_DRAMA_PLATFORMS, detect_platform
+from app.core.web_media import mp4_video_info, resolution_label
 
 COLUMNS = (
     "#", "", "", "Name", "Variant", "Hoster", "Status", "Progress", "Uploader", "ID",
@@ -155,13 +156,18 @@ def media_kind(reel):
     if ext in _DOCUMENT_EXT:
         return "document"
     url = (reel.url or "").lower()
+    url_ext = os.path.splitext(urlparse(url).path)[1].lower()
+    if url_ext in _IMAGE_EXT:
+        return "image"
+    if url_ext in _AUDIO_EXT:
+        return "music"
     host = host_label(reel)
     if "pinterest." in host or host == "pin.it":
         if reel.duration or ext in {".mp4", ".webm", ".mkv", ".mov"}:
             return "video"
         if "/pin/" in url:
             return "image"
-    if "music.youtube" in host or "soundcloud" in host or "/audio" in url:
+    if "music.youtube" in host or "soundcloud" in host or "suno." in host or "/audio" in url:
         return "music"
     if any(token in url for token in ("/photo", "/photos", "/p/", "/img")):
         if "/reel/" not in url and "/video/" not in url and "/watch" not in url:
@@ -250,13 +256,17 @@ def row_title(reel):
             return os.path.basename(reel.filepath)
         return post_label(reel.title, reel.description, reel.rid) or variant_label(reel)
     if is_series_package(reel):
-        return post_label(reel.title, reel.description, reel.rid) or reel.series or reel.rid or "-"
+        return collapse_text(reel.title) or reel.series or post_label(reel.title, reel.description, reel.rid) or reel.rid or "-"
     series = getattr(reel, "series", "") or ""
     if series and getattr(reel, "series_url", ""):
         leaf = episode_leaf_name(reel.title, reel.description, reel.rid, series=series)
         if leaf:
             return leaf
-    label = post_label(reel.title, reel.description, reel.rid)
+    platform = getattr(reel, "platform", "") or ""
+    if platform in MOVIE_DRAMA_PLATFORMS or platform == "bilibili":
+        label = collapse_text(reel.title) or post_label(reel.title, reel.description, reel.rid)
+    else:
+        label = post_label(reel.title, reel.description, reel.rid)
     if (label or "").lower().strip() in _PLACEHOLDER_TITLES:
         if reel.filepath:
             return os.path.splitext(os.path.basename(reel.filepath))[0]
@@ -312,10 +322,24 @@ def reel_key(url, variant=""):
 
 
 def variant_label(reel):
-    """Grabber child row: Video / Audio / Image: Best Quality Image."""
+    """Variant column: Video (720p MP4) / Video (Auto High) / Audio / Image."""
+    if is_series_package(reel):
+        return ""
     kind = getattr(reel, "variant", "") or ""
+    if not kind:
+        if (
+            getattr(reel, "series_url", "")
+            or getattr(reel, "filepath", "")
+            or getattr(reel, "status", "") in ("downloading", "done")
+            or getattr(reel, "quality", "")
+        ):
+            kind = media_kind(reel)
+    quality = getattr(reel, "quality", "") or ""
+    if not quality and kind == "video" and not getattr(reel, "variant", ""):
+        if getattr(reel, "series_url", "") or getattr(reel, "status", "") == "downloading":
+            quality = "Auto High"
     if kind == "video":
-        return tr("Video")
+        return f"{tr('Video')} ({quality})" if quality else tr("Video")
     if kind == "music":
         return tr("Audio")
     if kind == "image":
@@ -373,7 +397,7 @@ def extract_package_rows(entry, kinds=None, kind_folders=None, folder_group=Fals
 class Reel:
     __slots__ = (
         "url", "rid", "status", "percent", "total", "speed", "eta",
-        "title", "description", "uploader", "duration", "filepath", "save_dir", "checked",
+        "title", "description", "uploader", "duration", "quality", "filepath", "save_dir", "checked",
         "platform", "extractor_key", "webpage_url_domain",
         "comment", "added_at", "variant", "image_quality", "media_kinds", "expanded",
         "series", "series_url", "package_kind",
@@ -399,6 +423,7 @@ class Reel:
         self.description = meta.get("description") or ""
         self.uploader = meta.get("uploader") or ""
         self.duration = meta.get("duration")
+        self.quality = meta.get("quality") or ""
         self.filepath = meta.get("filepath") or ""
         self.save_dir = meta.get("save_dir") or ""
         self.checked = False
@@ -436,6 +461,7 @@ class Reel:
             "description": self.description,
             "uploader": self.uploader,
             "duration": self.duration,
+            "quality": self.quality,
             "filepath": self.filepath,
             "save_dir": self.save_dir,
             "platform": self.platform,
@@ -491,6 +517,15 @@ class ReelModel(QAbstractTableModel):
         column = index.column()
 
         if role == Qt.ItemDataRole.CheckStateRole and column == COL_CHECK:
+            if is_series_package(reel):
+                children = self._series_episode_rows(reel.series_url or reel.url)
+                if children:
+                    flags = {bool(child.checked) for child in children}
+                    if flags == {True}:
+                        return Qt.CheckState.Checked
+                    if flags == {False}:
+                        return Qt.CheckState.Unchecked
+                    return Qt.CheckState.PartiallyChecked
             return Qt.CheckState.Checked if reel.checked else Qt.CheckState.Unchecked
 
         if role == Qt.ItemDataRole.DisplayRole:
@@ -503,9 +538,14 @@ class ReelModel(QAbstractTableModel):
             if column == COL_ID:
                 return reel.rid
             if column == COL_TITLE:
-                return row_title(reel)
+                base = row_title(reel)
+                if is_series_package(reel):
+                    children = self._series_episode_rows(reel.series_url or reel.url)
+                    if children and f"({len(children)}" not in base:
+                        return f"{base} ({len(children)} EP)"
+                return base
             if column == COL_VARIANT:
-                return variant_label(reel) if reel.variant else ""
+                return self._display_variant(reel)
             if column == COL_UPLOADER:
                 return reel.uploader or "-"
             if column == COL_SIZE:
@@ -543,6 +583,8 @@ class ReelModel(QAbstractTableModel):
                 not reel.variant and package_has_children(self._reels, reel.url)
             ):
                 return icons.icon("folder", KIND_ICON_COLORS["folder"], 16)
+            if not reel.variant and getattr(reel, "series_url", ""):
+                return icons.icon("kind-video", KIND_ICON_COLORS["video"], 16)
             return None
         if role == Qt.ItemDataRole.DecorationRole and column == COL_HOST:
             color = "#e7ecf3" if self._dark else "#1c1e21"
@@ -591,7 +633,27 @@ class ReelModel(QAbstractTableModel):
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         if not index.isValid() or role != Qt.ItemDataRole.CheckStateRole:
             return False
-        self._reels[index.row()].checked = Qt.CheckState(value) == Qt.CheckState.Checked
+        checked = Qt.CheckState(value) == Qt.CheckState.Checked
+        reel = self._reels[index.row()]
+        reel.checked = checked
+        if is_series_package(reel):
+            series_key = reel.series_url or reel.url
+            for child in self._reels:
+                if (child.series_url or "") == series_key:
+                    child.checked = checked
+            self.dataChanged.emit(
+                self.index(0, COL_CHECK),
+                self.index(len(self._reels) - 1, COL_CHECK),
+                [role],
+            )
+            return True
+        if getattr(reel, "series_url", ""):
+            pkg_row = (getattr(self, "_series_pkg_row_by_url", None) or {}).get(reel.series_url)
+            if pkg_row is not None and 0 <= pkg_row < len(self._reels):
+                children = self._series_episode_rows(reel.series_url)
+                self._reels[pkg_row].checked = any(c.checked for c in children)
+                pkg_idx = self.index(pkg_row, COL_CHECK)
+                self.dataChanged.emit(pkg_idx, pkg_idx, [role])
         self.dataChanged.emit(index, index, [role])
         return True
 
@@ -638,16 +700,25 @@ class ReelModel(QAbstractTableModel):
     def _reindex(self):
         self._row_by_key = {}
         self._row_by_url = {}
+        self._series_rows_by_url = {}
+        self._series_pkg_row_by_url = {}
         for row, reel in enumerate(self._reels):
             self._row_by_key[reel_key(reel.url, reel.variant)] = row
             if reel.url not in self._row_by_url or not reel.variant:
                 self._row_by_url[reel.url] = row
+            if is_series_package(reel):
+                s_key = reel.series_url or reel.url
+                if s_key:
+                    self._series_pkg_row_by_url[s_key] = row
+            elif not reel.variant and reel.series_url:
+                self._series_rows_by_url.setdefault(reel.series_url, []).append(reel)
 
     def add_entries(self, entries, prepend=False):
         """Append (or prepend) new entries; fill title/caption on listed rows."""
         additions = []
         seen = set(self._row_by_key)
         last = len(COLUMNS) - 1
+        dirty_rows = []
         for entry in entries:
             data = dict(entry) if isinstance(entry, dict) else {"url": entry}
             url = data.pop("url", "")
@@ -659,7 +730,10 @@ class ReelModel(QAbstractTableModel):
                 row = self._row_by_key[key]
                 reel = self._reels[row]
                 changed = False
-                for field in ("title", "description", "uploader", "comment", "image_quality"):
+                for field in (
+                    "title", "description", "uploader", "comment",
+                    "image_quality", "series", "series_url", "save_dir", "quality",
+                ):
                     value = data.get(field)
                     if value and not getattr(reel, field):
                         setattr(reel, field, value)
@@ -668,13 +742,16 @@ class ReelModel(QAbstractTableModel):
                     reel.duration = data["duration"]
                     changed = True
                 if changed:
-                    self.dataChanged.emit(
-                        self.index(row, 0), self.index(row, last),
-                    )
+                    dirty_rows.append(row)
                 continue
             if key not in seen:
                 seen.add(key)
                 additions.append(Reel(url, **data))
+        if dirty_rows:
+            self.dataChanged.emit(
+                self.index(min(dirty_rows), 0),
+                self.index(max(dirty_rows), last),
+            )
         if not additions:
             return 0
         if prepend:
@@ -694,13 +771,14 @@ class ReelModel(QAbstractTableModel):
         """Patch title, comment, folder, or variant fields for matching rows."""
         match_variant = fields.pop("match_variant", None)
         changed_rows = []
+        series_Cascade = []
         for row, reel in enumerate(self._reels):
             if reel.url != url:
                 continue
             if match_variant is not None and reel.variant != match_variant:
                 continue
             local = False
-            for field in ("title", "comment", "filepath", "save_dir", "image_quality", "media_kinds"):
+            for field in ("title", "comment", "filepath", "save_dir", "image_quality", "media_kinds", "series"):
                 if field not in fields:
                     continue
                 value = fields[field]
@@ -710,13 +788,37 @@ class ReelModel(QAbstractTableModel):
                     value = set(value) if value else set()
                 setattr(reel, field, value)
                 local = True
+            if is_series_package(reel):
+                if "title" in fields and fields["title"] is not None:
+                    reel.series = fields["title"]
+                    local = True
+                series_key = reel.series_url or reel.url
+                if series_key:
+                    series_Cascade.append(series_key)
             if local:
                 changed_rows.append(row)
+        if series_Cascade and any(k in fields for k in ("save_dir", "comment", "title")):
+            cascade_keys = set(series_Cascade)
+            for row, child in enumerate(self._reels):
+                if is_series_package(child) or (child.series_url or "") not in cascade_keys:
+                    continue
+                child_local = False
+                if "save_dir" in fields and fields["save_dir"] is not None:
+                    child.save_dir = fields["save_dir"]
+                    child_local = True
+                if "comment" in fields and fields["comment"] is not None:
+                    child.comment = fields["comment"]
+                    child_local = True
+                if "title" in fields and fields["title"] is not None:
+                    child.series = fields["title"]
+                    child_local = True
+                if child_local and row not in changed_rows:
+                    changed_rows.append(row)
         if not changed_rows:
             return False
         self.dataChanged.emit(
-            self.index(changed_rows[0], 0),
-            self.index(changed_rows[-1], len(COLUMNS) - 1),
+            self.index(min(changed_rows), 0),
+            self.index(max(changed_rows), len(COLUMNS) - 1),
         )
         return True
 
@@ -781,6 +883,9 @@ class ReelModel(QAbstractTableModel):
         """Episode package rows under a movie/series folder."""
         if not series_url:
             return []
+        indexed = getattr(self, "_series_rows_by_url", None)
+        if indexed is not None:
+            return indexed.get(series_url, [])
         return [
             reel for reel in self._reels
             if not reel.variant
@@ -842,6 +947,16 @@ class ReelModel(QAbstractTableModel):
             return sum(values) if values else reel.duration
         return reel.duration
 
+    def _display_variant(self, reel):
+        if is_series_package(reel):
+            children = self._series_episode_rows(reel.series_url or reel.url)
+            for child in children:
+                if child.quality:
+                    return f"{tr('Video')} ({child.quality})"
+            if children:
+                return variant_label(children[0])
+        return variant_label(reel)
+
     def _display_speed(self, reel):
         if is_series_package(reel):
             children = self._series_episode_rows(reel.series_url or reel.url)
@@ -861,6 +976,14 @@ class ReelModel(QAbstractTableModel):
     def _touch_series_package(self, series_url):
         """Repaint the movie folder row after an episode progress tick."""
         if not series_url:
+            return
+        pkg_map = getattr(self, "_series_pkg_row_by_url", None)
+        if pkg_map is not None and series_url in pkg_map:
+            row = pkg_map[series_url]
+            self.dataChanged.emit(
+                self.index(row, 0),
+                self.index(row, len(COLUMNS) - 1),
+            )
             return
         for row, reel in enumerate(self._reels):
             if is_series_package(reel) and (reel.series_url or reel.url) == series_url:
@@ -908,11 +1031,10 @@ class ReelModel(QAbstractTableModel):
         self.set_urls([])
 
     def urls(self):
-        seen = []
-        for reel in self._reels:
-            if reel.url not in seen:
-                seen.append(reel.url)
-        return seen
+        return list(dict.fromkeys(reel.url for reel in self._reels))
+
+    def url_set(self):
+        return set(self._row_by_url)
 
     def package_count(self):
         """Top-level packages/links: series folder counts as one, not each episode."""
@@ -939,15 +1061,11 @@ class ReelModel(QAbstractTableModel):
             if not reel.checked:
                 continue
             if is_series_package(reel):
-                for child in self._reels:
-                    if (
-                        child.series_url == reel.series_url
-                        and not is_series_package(child)
-                        and not child.variant
-                        and child.url not in seen
-                    ):
-                        seen.add(child.url)
-                        found.append(child.url)
+                children = self._series_episode_rows(reel.series_url or reel.url)
+                if not children:
+                    if reel.url not in seen:
+                        seen.add(reel.url)
+                        found.append(reel.url)
                 continue
             if reel.variant or reel.url in seen:
                 continue
@@ -957,11 +1075,29 @@ class ReelModel(QAbstractTableModel):
 
     def set_checked_rows(self, rows, checked):
         changed = False
+        series_keys = set()
         for row in rows:
+            if not (0 <= row < len(self._reels)):
+                continue
             reel = self._reels[row]
             if reel.checked != checked:
                 reel.checked = checked
                 changed = True
+            if is_series_package(reel) and (reel.series_url or reel.url):
+                series_keys.add(reel.series_url or reel.url)
+        if series_keys:
+            for child in self._reels:
+                if (child.series_url or "") in series_keys and child.checked != checked:
+                    child.checked = checked
+                    changed = True
+        for s_key, pkg_row in (getattr(self, "_series_pkg_row_by_url", None) or {}).items():
+            if 0 <= pkg_row < len(self._reels):
+                children = self._series_episode_rows(s_key)
+                if children:
+                    pkg_checked = any(c.checked for c in children)
+                    if self._reels[pkg_row].checked != pkg_checked:
+                        self._reels[pkg_row].checked = pkg_checked
+                        changed = True
         if changed and self._reels:
             self.dataChanged.emit(
                 self.index(0, COL_CHECK),
@@ -981,7 +1117,32 @@ class ReelModel(QAbstractTableModel):
 
     def remove_urls(self, urls):
         drop = set(urls)
-        keep = [reel for reel in self._reels if reel.url not in drop]
+        drop_series = {
+            (reel.series_url or reel.url)
+            for reel in self._reels
+            if is_series_package(reel) and reel.url in drop and (reel.series_url or reel.url)
+        }
+        keep = [
+            reel for reel in self._reels
+            if reel.url not in drop and (reel.series_url or "") not in drop_series
+        ]
+        # Drop any series package row whose episode children have all been removed.
+        remaining_series = {
+            reel.series_url
+            for reel in keep
+            if not is_series_package(reel) and getattr(reel, "series_url", "")
+        }
+        had_children_series = {
+            reel.series_url
+            for reel in self._reels
+            if not is_series_package(reel) and getattr(reel, "series_url", "")
+        }
+        empty_series = had_children_series - remaining_series
+        if empty_series:
+            keep = [
+                reel for reel in keep
+                if not (is_series_package(reel) and (reel.series_url or reel.url) in empty_series)
+            ]
         removed = len(self._reels) - len(keep)
         if not removed:
             return 0
@@ -1074,12 +1235,19 @@ class ReelModel(QAbstractTableModel):
             for field in ("title", "description", "uploader", "filepath", "platform",
                           "extractor_key", "webpage_url_domain"):
                 value = event.get(field)
-                if value:
-                    setattr(reel, field, value)
+                if not value:
+                    continue
+                if field == "title" and reel.series and reel.title:
+                    continue
+                setattr(reel, field, value)
             if event.get("id"):
                 reel.rid = event["id"]
             if event.get("duration") is not None:
                 reel.duration = event["duration"]
+            if event.get("quality"):
+                reel.quality = event["quality"]
+            if event.get("total") is not None and status != "downloading":
+                reel.total = event["total"]
 
         if status == "done":
             reel.percent = 100.0
@@ -1187,6 +1355,10 @@ class ReelModel(QAbstractTableModel):
         reel.total = source.total
         reel.speed = source.speed
         reel.eta = source.eta
+        if source.duration is not None and reel.duration is None:
+            reel.duration = source.duration
+        if source.quality and not reel.quality:
+            reel.quality = source.quality
         reel.checked = source.checked
         if source.comment:
             reel.comment = source.comment
@@ -1318,6 +1490,20 @@ class ReelModel(QAbstractTableModel):
                 snap["files"][kind] = path
         if folder:
             snap["pkg"].save_dir = folder
+        primary_path = snap["files"].get("video") or next(iter(snap["files"].values()), "")
+        if primary_path and os.path.isfile(primary_path):
+            if not snap["pkg"].total:
+                try:
+                    snap["pkg"].total = os.path.getsize(primary_path)
+                except OSError:
+                    pass
+            if not snap["pkg"].duration or not snap["pkg"].quality:
+                dur, w, h = mp4_video_info(primary_path)
+                if dur and not snap["pkg"].duration:
+                    snap["pkg"].duration = dur
+                qual = resolution_label(w, h, primary_path)
+                if qual and not snap["pkg"].quality:
+                    snap["pkg"].quality = qual
         new_rows = self._rows_for_folder_layout(snap, folder_group, kind_folders=None)
         if folder_group and expand:
             for reel in new_rows:
@@ -1337,7 +1523,7 @@ class ReelModel(QAbstractTableModel):
         if _layout_sig(current) == _layout_sig(new_rows):
             changed = False
             for old, new in zip(current, new_rows):
-                for attr in ("filepath", "save_dir", "title", "status", "percent", "total"):
+                for attr in ("filepath", "save_dir", "title", "status", "percent", "total", "duration", "quality"):
                     value = getattr(new, attr)
                     if getattr(old, attr) != value:
                         setattr(old, attr, value)
@@ -1370,27 +1556,44 @@ class ReelFilterProxy(QSortFilterProxyModel):
         self._tree_mode = False
 
     def set_status(self, status):
+        if self._status == status:
+            return
         self._status = status
         self.invalidate()
 
     def set_text(self, text):
-        self._text = text.strip().lower()
+        cleaned = text.strip().lower()
+        if self._text == cleaned:
+            return
+        self._text = cleaned
         self.invalidate()
 
     def set_field(self, field):
-        self._field = field or "all"
+        chosen = field or "all"
+        if self._field == chosen:
+            return
+        self._field = chosen
         self.invalidate()
 
     def set_kinds(self, kinds):
-        self._kinds = set(kinds) if kinds is not None else set(_ALL_KINDS)
+        wanted = set(kinds) if kinds is not None else set(_ALL_KINDS)
+        if self._kinds == wanted:
+            return
+        self._kinds = wanted
         self.invalidate()
 
     def set_hosts(self, hosts):
-        self._hosts = set(hosts) if hosts is not None else None
+        wanted = set(hosts) if hosts is not None else None
+        if self._hosts == wanted:
+            return
+        self._hosts = wanted
         self.invalidate()
 
     def set_tree_mode(self, enabled):
-        self._tree_mode = bool(enabled)
+        flag = bool(enabled)
+        if self._tree_mode == flag:
+            return
+        self._tree_mode = flag
         self.invalidate()
 
     def _haystack(self, reel):

@@ -6,18 +6,20 @@ import re
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from app.core.cookies import cookie_header_from_netscape, cookies_from_curl
 from app.core.download import (
     _HTTP_UA,
     _pinterest_pin_duration,
     collapse_text,
+    pinterest_pin_id,
     pinterest_resource,
     read_urls,
     reel_id,
 )
 from app.core.jobs import StopRequested, check_stop
+from app.core.platform_icons import platform_from_extractor
 from app.core.runtime import collect_csv_path, default_output_root, state_dir
 from app.core.scrape import scrape_reel_urls
 from app.core.urls import (
@@ -27,17 +29,23 @@ from app.core.urls import (
     TIKTOK_SEC_UID_PREFIX,
     UNSUPPORTED_FEED,
     UNSUPPORTED_FEED_MESSAGES,
+    WEB_FALLBACK_ONLY_PLATFORMS,
     classify_source,
     collection_strategy,
     detect_platform,
     instagram_ytdlp_list_url,
     is_bilibili_season_url,
+    is_pinterest_related_url,
+    is_pinterest_search_url,
+    is_scraped_media_url,
     is_tiktok_user_feed,
     normalize_source_url,
     tiktok_sec_uid,
     tiktok_user_feed,
     tiktok_username,
+    wetv_play_ids,
 )
+from app.core.web_media import extract_web_feed, extract_web_media, fetch_text
 
 TIKTOK_PROFILE_HELP = (
     "TikTok blocked listing @{name}. Collect one video from that creator first "
@@ -84,6 +92,10 @@ def entry_from_url(url, **extra):
     }
     if extra.get("duration") in ("", "NA", "None", "none"):
         item["duration"] = None
+    if extra.get("series"):
+        item["series"] = collapse_text(extra.get("series"))
+    if extra.get("series_url"):
+        item["series_url"] = collapse_text(extra.get("series_url"))
     return item
 
 
@@ -105,13 +117,11 @@ def entry_from_info(info, fallback_url=""):
 
 
 def extra_platform(info):
-    key = (info.get("extractor_key") or info.get("extractor") or "").lower()
-    if "bili" in key:
-        return "bilibili"
-    for name in ("facebook", "instagram", "youtube", "tiktok", "twitter", "douyin", "kuaishou", "pinterest"):
-        if name in key:
-            return name
-    return "unknown"
+    matched = platform_from_extractor(
+        info.get("extractor_key") or info.get("extractor") or "",
+        info.get("webpage_url_domain") or "",
+    )
+    return matched or "unknown"
 
 
 def tiktok_cache_path():
@@ -600,16 +610,142 @@ def _collect_ytdlp(
 def list_bilibili_season_entries(
     url, *, log=None, should_stop=None, ydl_cls=None, cookies_browser="", cookies_file="",
 ):
-    """Expand a bilibili.tv season URL into episode table rows (no CSV write)."""
+    """Expand a bilibili.tv, wetv.vip, or hongguoduanju.com season URL into episode rows."""
+    log_fn = log or (lambda *_: None)
+    platform = detect_platform(url)
+    if platform == "wetv" and ydl_cls is None:
+        entries = _collect_wetv_entries(url, log=log_fn, should_stop=should_stop, feed=True)
+        if entries:
+            return entries
+    if platform in WEB_FALLBACK_ONLY_PLATFORMS and ydl_cls is None:
+        raw_feed = extract_web_feed(url)
+        if raw_feed:
+            return [
+                entry_from_url(
+                    item["url"],
+                    **{k: v for k, v in item.items() if k != "url"},
+                )
+                for item in raw_feed
+                if item.get("url")
+            ]
     return _collect_ytdlp(
         url,
-        log=log or (lambda *_: None),
+        log=log_fn,
         should_stop=should_stop,
         cookies_browser=cookies_browser,
         ydl_cls=ydl_cls,
         feed=True,
         cookies_file=cookies_file,
     )
+
+
+_WETV_NEXT_DATA_RE = re.compile(
+    r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+_WETV_TRAILER_TITLE_RE = re.compile(
+    r"^(?:Teaser|Trailer|Preview|PV|CM|Highlight|Clip)\b",
+    re.IGNORECASE,
+)
+
+
+def _collect_wetv_entries(url, *, log, should_stop=None, on_entries=None, feed=None, opener=None):
+    """Read WeTV Next.js videoList to list all series episodes (skipping teasers) or a 1-item movie."""
+    series_id, episode_id = wetv_play_ids(url)
+    if not series_id:
+        return []
+    check_stop(should_stop)
+    log("Listing WeTV episodes…")
+    try:
+        page_html, _final_url = fetch_text(url, opener=opener)
+    except Exception:
+        return []
+    match = _WETV_NEXT_DATA_RE.search(page_html or "")
+    if not match:
+        return []
+    try:
+        next_data = json.loads(match.group(1))
+        raw_page_data = (
+            ((next_data.get("props") or {}).get("pageProps") or {}).get("data")
+        )
+        page_data = json.loads(raw_page_data) if isinstance(raw_page_data, str) else (raw_page_data or {})
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(page_data, dict):
+        return []
+    cover = page_data.get("coverInfo") if isinstance(page_data.get("coverInfo"), dict) else {}
+    video_list = page_data.get("videoList") if isinstance(page_data.get("videoList"), list) else []
+    if not video_list:
+        return []
+    series_title = collapse_text(cover.get("title")) or series_id
+    full_videos = []
+    skipped = 0
+    for item in video_list:
+        if not isinstance(item, dict) or not item.get("vid"):
+            continue
+        title = collapse_text(item.get("title"))
+        if item.get("isTrailer") or _WETV_TRAILER_TITLE_RE.match(title) or _is_bilibili_extra_item(item, series_title):
+            skipped += 1
+            continue
+        full_videos.append(item)
+    if not full_videos:
+        full_videos = [item for item in video_list if isinstance(item, dict) and item.get("vid")]
+        skipped = 0
+
+    if skipped > 0 and (feed is not False and len(full_videos) > 1):
+        log(f"Skipped {skipped} teaser/extra item(s).")
+
+    series_url = f"https://wetv.vip/en/play/{series_id}"
+    # Single-item movie or explicit single-video request:
+    if len(full_videos) == 1 or feed is False:
+        chosen = next(
+            (item for item in full_videos if item.get("vid") == episode_id),
+            full_videos[0],
+        )
+        vid = str(chosen.get("vid"))
+        ep_url = f"https://wetv.vip/en/play/{series_id}/{vid}"
+        title = series_title if len(full_videos) == 1 else (collapse_text(chosen.get("title")) or series_title)
+        entries = [
+            entry_from_url(
+                ep_url,
+                id=vid,
+                title=title,
+                description="",
+                uploader="WeTV",
+                duration=chosen.get("duration"),
+                platform="wetv",
+                extractor_key="WeTvEpisode",
+                webpage_url_domain="wetv.vip",
+            )
+        ]
+        _push_entries(on_entries, entries)
+        return entries
+
+    entries = []
+    for index, item in enumerate(full_videos, start=1):
+        check_stop(should_stop)
+        vid = str(item.get("vid"))
+        ep_raw = str(item.get("episode") or "").strip().lstrip("0")
+        ep_num = ep_raw if ep_raw.isdigit() else str(index)
+        ep_url = f"https://wetv.vip/en/play/{series_id}/{vid}"
+        ep_title = f"{series_title} E{ep_num}"
+        entry = entry_from_url(
+            ep_url,
+            id=vid,
+            title=ep_title,
+            description="",
+            uploader=series_title,
+            duration=item.get("duration"),
+            platform="wetv",
+            extractor_key="WeTvEpisode",
+            webpage_url_domain="wetv.vip",
+            series=series_title,
+            series_url=series_url,
+        )
+        entries.append(entry)
+    log(f"Found {len(entries)} episode(s).")
+    _push_entries(on_entries, entries)
+    return entries
 
 
 def _pinterest_path_segments(url):
@@ -643,31 +779,49 @@ def _collect_pinterest_page(resource, options, bookmark, should_stop):
         query["bookmarks"] = [bookmark]
     page = pinterest_resource(resource, query)
     items = page.get("data")
+    if isinstance(items, dict) and isinstance(items.get("results"), list):
+        items = items["results"]
     if not isinstance(items, list):
         items = []
     return items, page.get("bookmark")
 
 
 def _collect_pinterest_feed(url, *, log, should_stop, on_entries=None):
-    """Paginate BoardFeed or UserPins; keep image-only pins."""
+    """Paginate BoardFeed, UserPins, BaseSearch, or RelatedPinFeed."""
     segments = _pinterest_path_segments(url)
-    if not segments or segments[0].lower() in PINTEREST_RESERVED:
-        raise ValueError("Not a Pinterest board or profile URL.")
-    username = segments[0]
-    if len(segments) >= 2:
-        slug = segments[1]
-        log("Listing Pinterest board…")
-        board = pinterest_resource("Board", {"slug": slug, "username": username})
-        data = board.get("data") if isinstance(board, dict) else None
-        board_id = (data or {}).get("id") if isinstance(data, dict) else None
-        if not board_id:
-            raise ValueError("Pinterest board was not found.")
-        resource = "BoardFeed"
-        options = {"board_id": board_id, "page_size": 250}
+    if is_pinterest_search_url(url):
+        query_params = parse_qs(urlparse(url).query)
+        search_q = (query_params.get("q") or query_params.get("query") or [""])[0].strip()
+        if not search_q:
+            raise ValueError("Pinterest search query is empty.")
+        log(f"Searching Pinterest for '{search_q}'…")
+        resource = "BaseSearch"
+        options = {"query": search_q, "scope": "pins", "page_size": 250}
+    elif is_pinterest_related_url(url):
+        pin_id = pinterest_pin_id(url)
+        if not pin_id:
+            raise ValueError("Pinterest pin id was not found for related pins.")
+        log(f"Listing related Pinterest pins for {pin_id}…")
+        resource = "RelatedPinFeed"
+        options = {"pin": pin_id, "page_size": 50}
     else:
-        log("Listing Pinterest profile pins…")
-        resource = "UserPins"
-        options = {"username": username, "page_size": 250}
+        if not segments or segments[0].lower() in PINTEREST_RESERVED:
+            raise ValueError("Not a Pinterest board, profile, search, or related URL.")
+        username = segments[0]
+        if len(segments) >= 2:
+            slug = segments[1]
+            log("Listing Pinterest board…")
+            board = pinterest_resource("Board", {"slug": slug, "username": username})
+            data = board.get("data") if isinstance(board, dict) else None
+            board_id = (data or {}).get("id") if isinstance(data, dict) else None
+            if not board_id:
+                raise ValueError("Pinterest board was not found.")
+            resource = "BoardFeed"
+            options = {"board_id": board_id, "page_size": 250}
+        else:
+            log("Listing Pinterest profile pins…")
+            resource = "UserPins"
+            options = {"username": username, "page_size": 250}
 
     bookmark = None
     entries = []
@@ -675,7 +829,9 @@ def _collect_pinterest_feed(url, *, log, should_stop, on_entries=None):
         items, bookmark = _collect_pinterest_page(resource, options, bookmark, should_stop)
         batch = []
         for item in items:
-            if not isinstance(item, dict) or item.get("type") != "pin":
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") and item.get("type") != "pin":
                 continue
             entry = _entry_from_pinterest_pin(item)
             if entry:
@@ -849,7 +1005,69 @@ def collect_entries(
         return csv_path, entries
 
     kind = classify_source(url) if feed is None else (FEED if feed else SINGLE)
-    if detect_platform(url) == "pinterest" and kind == FEED:
+    platform = detect_platform(url)
+    if is_scraped_media_url(url) and ydl_cls is None:
+        info = extract_web_media(url) or {}
+        entries = [
+            entry_from_url(
+                url,
+                id=info.get("id") or reel_id(url),
+                title=info.get("title") or reel_id(url),
+                description=info.get("description") or "",
+                uploader=info.get("uploader") or "",
+                platform=platform,
+            )
+        ]
+        _push_entries(on_entries, entries)
+        csv_path = collect_csv_path(channel)
+        write_entries_csv(csv_path, entries)
+        log(f"Collected {len(entries)} item(s).")
+        return csv_path, entries
+
+    if platform == "wetv" and ydl_cls is None:
+        entries = _collect_wetv_entries(
+            url, log=log, should_stop=should_stop, on_entries=on_entries, feed=feed,
+        )
+        if entries:
+            csv_path = collect_csv_path(channel)
+            write_entries_csv(csv_path, entries)
+            log(f"Collected {len(entries)} item(s).")
+            return csv_path, entries
+
+    if platform in WEB_FALLBACK_ONLY_PLATFORMS and ydl_cls is None:
+        log(f"Listing {platform.capitalize()} episodes…")
+        raw_feed = extract_web_feed(url) if feed is not False else []
+        entries = [
+            entry_from_url(
+                item["url"],
+                **{k: v for k, v in item.items() if k != "url"},
+            )
+            for item in (raw_feed or [])
+            if item.get("url")
+        ]
+        if not entries:
+            web_info = extract_web_media(url)
+            if web_info:
+                entries = [
+                    entry_from_url(
+                        url,
+                        id=web_info.get("id") or reel_id(url),
+                        title=web_info.get("title") or reel_id(url),
+                        description=web_info.get("description") or "",
+                        uploader=web_info.get("uploader") or "",
+                        duration=web_info.get("duration"),
+                        platform=platform,
+                    )
+                ]
+        if entries:
+            _push_entries(on_entries, entries)
+            csv_path = collect_csv_path(channel)
+            write_entries_csv(csv_path, entries)
+            log(f"Collected {len(entries)} item(s).")
+            return csv_path, entries
+        raise ValueError(f"No episodes or media found at {url}")
+
+    if platform == "pinterest" and kind == FEED:
         try:
             entries = _collect_pinterest_feed(
                 url, log=log, should_stop=should_stop, on_entries=on_entries,
@@ -868,12 +1086,45 @@ def collect_entries(
             log(f"Collected {len(entries)} item(s).")
             return csv_path, entries
 
-    entries = _collect_ytdlp(
-        url, log=log, should_stop=should_stop,
-        cookies_browser=cookies_browser, ydl_cls=ydl_cls, sleep=sleep,
-        cache_path=cache_path, feed=feed, on_entries=on_entries,
-        cookies_file=cookies_file, dateafter=dateafter,
-    )
+    try:
+        entries = _collect_ytdlp(
+            url, log=log, should_stop=should_stop,
+            cookies_browser=cookies_browser, ydl_cls=ydl_cls, sleep=sleep,
+            cache_path=cache_path, feed=feed, on_entries=on_entries,
+            cookies_file=cookies_file, dateafter=dateafter,
+        )
+    except StopRequested:
+        raise
+    except Exception as exc:
+        if ydl_cls is not None or (platform == "tiktok" and kind == FEED):
+            raise
+        log(f"yt-dlp could not extract {platform}; trying fallback library…")
+        entries = []
+        if kind == FEED:
+            entries = [
+                entry_from_url(
+                    item["url"],
+                    **{k: v for k, v in item.items() if k != "url"},
+                )
+                for item in (extract_web_feed(url) or [])
+                if item.get("url")
+            ]
+        if not entries:
+            web_info = extract_web_media(url)
+            if web_info:
+                entries = [
+                    entry_from_url(
+                        url,
+                        id=web_info.get("id") or reel_id(url),
+                        title=web_info.get("title") or reel_id(url),
+                        description=web_info.get("description") or "",
+                        uploader=web_info.get("uploader") or "",
+                        platform=platform,
+                    )
+                ]
+        if not entries:
+            raise exc
+        _push_entries(on_entries, entries)
     csv_path = collect_csv_path(channel)
     write_entries_csv(csv_path, entries)
     log(f"Collected {len(entries)} item(s).")

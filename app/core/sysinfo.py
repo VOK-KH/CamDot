@@ -356,3 +356,125 @@ def process_summary():
     if rss:
         tooltip += f"\nMemory in use: {human_bytes(rss)}"
     return label, tooltip
+
+
+# ------------------------------------------------ hardware auto-tuning
+
+DEFAULT_GPU_ACCEL = "auto"
+GPU_ACCEL_MODES = (
+    ("auto", "Auto (Detect GPU)"),
+    ("nvenc", "NVIDIA NVENC (CUDA)"),
+    ("qsv", "Intel Quick Sync (QSV)"),
+    ("amf", "AMD AMF (Direct3D 11)"),
+    ("cpu", "CPU Only (Software)"),
+)
+
+_ACCEL_TO_BACKEND = {
+    "NVENC": "nvenc",
+    "Quick Sync": "qsv",
+    "AMF": "amf",
+    "VideoToolbox": "videotoolbox",
+}
+
+
+@lru_cache(maxsize=1)
+def detected_gpu_backend():
+    """Return ``'nvenc'``, ``'qsv'``, ``'amf'``, ``'videotoolbox'``, or ``'cpu'``."""
+    for name in gpu_names():
+        accel = accelerator(name)
+        if accel in _ACCEL_TO_BACKEND:
+            return _ACCEL_TO_BACKEND[accel]
+    return "cpu"
+
+
+def resolve_gpu_backend(mode="auto"):
+    """Resolve user setting (``auto`` / ``nvenc`` / ``qsv`` / ``amf`` / ``cpu``) to active backend."""
+    choice = (mode or "auto").strip().lower()
+    if choice in ("", "auto"):
+        return detected_gpu_backend()
+    if choice in ("nvenc", "qsv", "amf", "videotoolbox", "cpu"):
+        return choice
+    return detected_gpu_backend()
+
+
+def ffmpeg_threads_per_worker(workers=4, cores=None):
+    """Balance CPU threads across concurrent download/conversion workers."""
+    logical = max(1, int(cores if cores is not None else (os.cpu_count() or 4)))
+    active_workers = max(1, int(workers or 1))
+    return max(1, min(8, logical // active_workers or 1))
+
+
+def ffmpeg_hwaccel_args(mode="auto", workers=4):
+    """FFmpeg input/global flags for GPU hardware acceleration and thread control."""
+    backend = resolve_gpu_backend(mode)
+    threads = ffmpeg_threads_per_worker(workers)
+    args = ["-threads", str(threads)]
+    if backend == "nvenc":
+        args.extend(["-hwaccel", "cuda"])
+    elif backend in ("qsv", "amf"):
+        args.extend(["-hwaccel", "d3d11va" if sys.platform == "win32" else "auto"])
+    elif backend == "videotoolbox":
+        args.extend(["-hwaccel", "videotoolbox"])
+    return args
+
+
+def ffmpeg_postprocessor_arg(mode="auto", workers=4):
+    """yt-dlp ``--postprocessor-args`` string balancing FFmpeg threads and GPU."""
+    threads = ffmpeg_threads_per_worker(workers)
+    backend = resolve_gpu_backend(mode)
+    if backend == "cpu":
+        return f"ffmpeg:-threads {threads}"
+    if backend == "nvenc":
+        return f"ffmpeg_i:-hwaccel cuda -threads {threads}"
+    if backend in ("qsv", "amf") and sys.platform == "win32":
+        return f"ffmpeg_i:-hwaccel d3d11va -threads {threads}"
+    return f"ffmpeg_i:-hwaccel auto -threads {threads}"
+
+
+@lru_cache(maxsize=8)
+def recommended_concurrency(cores=None, total_ram_bytes=None):
+    """Return ``(workers, fragments)`` tuned to the machine's CPU cores, RAM, and GPU.
+
+    ``workers`` (1..16) controls how many items download in parallel;
+    ``fragments`` (1..32) controls concurrent HTTP/HLS segments per item.
+    """
+    logical = int(cores if cores is not None else (os.cpu_count() or 4))
+    logical = max(1, logical)
+
+    if total_ram_bytes is None:
+        mem = memory()
+        total_ram_bytes = mem[1] if mem and mem[1] else (8 * 1024 ** 3)
+    ram_gb = float(total_ram_bytes) / (1024 ** 3)
+
+    if logical <= 2 or ram_gb < 4.0:
+        workers, fragments = 2, 4
+    elif logical <= 4:
+        workers = 4 if ram_gb >= 6.0 else 3
+        fragments = 8 if ram_gb >= 8.0 else 6
+    elif logical <= 8:
+        workers = 6 if ram_gb >= 12.0 else 4
+        fragments = 12 if ram_gb >= 12.0 else 8
+    elif logical <= 12:
+        workers = 8 if ram_gb >= 16.0 else 6
+        fragments = 16 if ram_gb >= 16.0 else 12
+    else:
+        workers = min(12, max(8, logical // 2)) if ram_gb >= 16.0 else 6
+        fragments = 24 if ram_gb >= 24.0 else 16
+
+    return max(1, min(16, workers)), max(1, min(32, fragments))
+
+
+def hardware_profile_summary():
+    """Human-readable hardware summary with CPU, RAM, GPU accelerator, and thread balance."""
+    cores = os.cpu_count() or 4
+    mem = memory()
+    ram_text = human_bytes(mem[1]) if mem and mem[1] else "unknown RAM"
+    gpus = gpu_names()
+    accel = next((accelerator(n) for n in gpus if accelerator(n)), "")
+    gpu_tag = f" · GPU {accel}" if accel else ""
+    workers, fragments = recommended_concurrency()
+    threads = ffmpeg_threads_per_worker(workers, cores=cores)
+    return (
+        f"{cores} core(s) · {ram_text} RAM{gpu_tag} → "
+        f"{workers} workers × {fragments} fragments ({threads} thread(s)/worker)"
+    )

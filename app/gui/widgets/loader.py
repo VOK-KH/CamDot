@@ -63,6 +63,22 @@ class BottyClip(QWidget):
         path = botty_clip_path(self._clip)
         if not os.path.isfile(path):
             return
+        # On live Windows desktops, QtMultimedia's WMF backend probes h264_mf /
+        # hevc_mf on the GUI thread and stalls the event loop. Use a lightweight
+        # stub player there so the PNG mascot renders without WMF overhead.
+        if os.name == "nt" and os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+            class _LightweightPlayer:
+                def __init__(self):
+                    self._playing = False
+
+                def play(self):
+                    self._playing = True
+
+                def stop(self):
+                    self._playing = False
+
+            self._player = _LightweightPlayer()
+            return
         try:
             from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
         except ImportError:
@@ -109,7 +125,7 @@ class BottyClip(QWidget):
     def start(self):
         if self._player is None:
             self._build_player()
-        if self._player is not None:
+        if self._player is not None and not self.is_playing():
             self._player.play()
 
     def stop(self):
@@ -121,6 +137,8 @@ class BottyClip(QWidget):
     def is_playing(self):
         if self._player is None:
             return False
+        if hasattr(self._player, "_playing"):
+            return bool(self._player._playing)
         from PySide6.QtMultimedia import QMediaPlayer
         return self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
 

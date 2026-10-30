@@ -746,5 +746,191 @@ class DownloadLayout(unittest.TestCase):
             self.assertFalse(os.path.isfile(os.path.join(downloads, "jireel.csv")))
 
 
+class WebMediaFallbackDownload(unittest.TestCase):
+    def test_drama_and_suno_fallback_downloads_when_ytdlp_unavailable(self):
+        from app.core.web_media import download_with_fallback
+
+        video_bytes = b"\x00\x00\x00\x18ftypmp42fakevideo"
+        audio_bytes = b"ID3fakeaudiomp3"
+        html_page = (
+            '<html><head>'
+            '<meta property="og:title" content="Boss Episode 1" />'
+            '<meta property="og:video" content="https://cdn.dramaboxdb.com/stream/ep1.mp4" />'
+            '</head><body></body></html>'
+        ).encode()
+
+        class FakeResp:
+            def __init__(self, data, url=""):
+                self._data = data
+                self._url = url
+
+            def geturl(self):
+                return self._url
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=20):
+            url = request.full_url if hasattr(request, "full_url") else request
+            if "dramaboxdb.com/episode/1" in url:
+                return FakeResp(html_page, url)
+            if url == "https://cdn.dramaboxdb.com/stream/ep1.mp4":
+                return FakeResp(video_bytes, url)
+            if "suno.com/song/" in url:
+                return FakeResp(
+                    b'<html><head><meta property="og:title" content="Neon Dreams"/></head></html>',
+                    url,
+                )
+            if "cdn1.suno.ai/" in url and url.endswith(".mp3"):
+                return FakeResp(audio_bytes, url)
+            raise AssertionError(f"unexpected url {url}")
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.web_media.urllib.request.urlopen", side_effect=fake_urlopen):
+                ok_drama = download_with_fallback(
+                    "https://www.dramaboxdb.com/episode/1",
+                    folder,
+                    item_id="ep1",
+                    media_kinds={"video"},
+                )
+                ok_suno = download_with_fallback(
+                    "https://suno.com/song/12345678-1234-1234-1234-1234567890ab",
+                    folder,
+                    item_id="suno1",
+                    media_kinds={"music"},
+                )
+            self.assertTrue(ok_drama)
+            self.assertTrue(ok_suno)
+            self.assertTrue(os.path.isfile(os.path.join(folder, "ep1.mp4")))
+            self.assertTrue(os.path.isfile(os.path.join(folder, "suno1.mp3")))
+
+    def test_every_social_and_drama_platform_pipeline(self):
+        """Test URL detect, normalize, classify, collect, and fallback download for each platform."""
+        from app.core.platforms import active_platforms
+        from app.core.urls import (
+            classify_source,
+            detect_platform,
+            extract_supported_urls,
+            is_supported_source,
+            normalize_source_url,
+        )
+        from app.core.web_media import download_with_fallback, extract_web_media
+
+        platform_sample_urls = {
+            # Social Network Sites
+            "facebook": "https://www.facebook.com/reel/1001",
+            "instagram": "https://www.instagram.com/reel/AbCdEf123/",
+            "pinterest": "https://www.pinterest.com/pin/123456789/",
+            "youtube": "https://www.youtube.com/watch?v=dQw4w9wgGcQ",
+            "tiktok": "https://www.tiktok.com/@demo/video/7000000000000000001",
+            "douyin": "https://www.douyin.com/video/7683008214744581018",
+            "kwai": "https://www.kwai.com/@creator/video/50001",
+            "snackvideo": "https://www.snackvideo.com/@creator/video/60001",
+            "kuaishou": "https://www.kuaishou.com/short-video/3xabc123",
+            "xiaohongshu": "https://www.xiaohongshu.com/explore/66aabbcc000000001",
+            "medaltv": "https://medal.tv/games/valorant/clips/iAbCdEf",
+            "threads": "https://www.threads.com/@user/post/C9xyz123",
+            "suno": "https://suno.com/song/12345678-1234-1234-1234-1234567890ab",
+            "twitter": "https://x.com/demo/status/1800000000000000001",
+            "reddit": "https://www.reddit.com/r/videos/comments/abc123/demo_clip/",
+            "dailymotion": "https://www.dailymotion.com/video/x8abcde",
+            "bilibili": "https://www.bilibili.tv/en/play/2117053/13436346",
+            "snapchat": "https://www.snapchat.com/spotlight/W7_EDlXWTBiXAEEniNoMPwAAY",
+            "weibo": "https://weibo.com/tv/show/1034:4900000000000001",
+            "twitch": "https://www.twitch.tv/videos/2100000001",
+            "scraped": "https://cdn.example-stream.org/media/direct_video.mp4",
+            # Movie & Drama Sites
+            "dramabox": "https://www.dramaboxdb.com/episode/ep-1",
+            "netshort": "https://www.netshort.com/episode/ep-1",
+            "flickreels": "https://www.flickreels.net/episode/ep-1",
+            "stardusttv": "https://www.stardusttv.net/episode/ep-1",
+            "starshort": "https://www.starshort.tv/episode/ep-1",
+            "goodshort": "https://www.goodshort.com/episode/ep-1",
+            "dramawave": "https://www.mydramawave.com/episode/ep-1",
+            "freereels": "https://www.free-reels.com/episode/ep-1",
+            "reelshort": "https://www.reelshort.com/episodes/ep-1",
+            "hongguo": "https://www.hongguoduanju.com/episode/ep-1",
+            "idrama": "https://www.idrama.video/episode/ep-1",
+            "bilitv": "https://www.bilitv.com/en/play/2117053/13436346",
+            "wetv": "https://wetv.vip/en/play/abc123/ep1",
+            "iqiyi": "https://www.iq.com/play/abc123",
+            "dramabite": "https://www.dramabite.media/episode/ep-1",
+            "vigloo": "https://www.vigloo.com/episode/ep-1",
+            "kisskh": "https://kisskh.org/Drama/Demo/Episode-1?id=1&ep=1",
+            "flextv": "https://www.flextv.cc/episode/ep-1",
+            "melolo": "https://melolo.org/episode/ep-1",
+            "kolabkhmer": "https://www.kolabkhmer.com/episode/ep-1",
+        }
+
+        catalog_ids = [entry["id"] for entry in active_platforms()]
+        self.assertEqual(set(platform_sample_urls), set(catalog_ids))
+
+        fake_mp4 = b"\x00\x00\x00\x18ftypmp42fakevideo"
+        fake_mp3 = b"ID3fakemp3audio"
+
+        class FakeResp:
+            def __init__(self, data, url=""):
+                self._data = data
+                self._url = url
+
+            def geturl(self):
+                return self._url
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=20):
+            req_url = request.full_url if hasattr(request, "full_url") else request
+            if req_url.endswith(".mp4"):
+                return FakeResp(fake_mp4, req_url)
+            if req_url.endswith(".mp3"):
+                return FakeResp(fake_mp3, req_url)
+            page = (
+                "<html><head>"
+                '<meta property="og:title" content="Sample Title" />'
+                '<meta property="og:video" content="https://cdn.test.local/media/stream.mp4" />'
+                "</head><body></body></html>"
+            ).encode()
+            return FakeResp(page, req_url)
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.web_media.urllib.request.urlopen", side_effect=fake_urlopen):
+                for platform_id, url in platform_sample_urls.items():
+                    with self.subTest(platform=platform_id, url=url):
+                        self.assertEqual(detect_platform(url), platform_id)
+                        self.assertTrue(is_supported_source(url))
+                        normalized = normalize_source_url(url)
+                        self.assertTrue(normalized.startswith("https://"))
+                        self.assertEqual(extract_supported_urls(f"check {url} now"), [normalized])
+                        self.assertEqual(classify_source(normalized), "single")
+                        info = extract_web_media(normalized)
+                        self.assertIsNotNone(info)
+                        self.assertTrue(info["media"])
+                        ok = download_with_fallback(
+                            normalized,
+                            folder,
+                            item_id=f"item_{platform_id}",
+                            media_kinds={"video", "music"},
+                        )
+                        self.assertTrue(ok)
+                        ext = ".mp3" if platform_id == "suno" else ".mp4"
+                        self.assertTrue(
+                            os.path.isfile(os.path.join(folder, f"item_{platform_id}{ext}"))
+                            or os.path.isfile(os.path.join(folder, f"item_{platform_id}_1{ext}"))
+                        )
+
+
 if __name__ == "__main__":
     unittest.main()

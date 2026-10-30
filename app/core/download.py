@@ -19,6 +19,7 @@ from datetime import date, timedelta
 from urllib.parse import urlencode, urlparse
 
 from app.core.jobs import StopRequested, check_stop
+from app.core.platform_icons import platform_from_extractor
 from app.core.runtime import (
     channel_state_dir,
     default_output_root,
@@ -26,15 +27,28 @@ from app.core.runtime import (
     resolve_ffmpeg,
     yt_dlp_command_prefix,
 )
+from app.core.sysinfo import (
+    DEFAULT_GPU_ACCEL,
+    GPU_ACCEL_MODES,
+    ffmpeg_postprocessor_arg,
+    ffmpeg_threads_per_worker,
+    recommended_concurrency,
+    resolve_gpu_backend,
+)
 from app.core.urls import (
+    MOVIE_DRAMA_PLATFORMS,
+    WEB_FALLBACK_ONLY_PLATFORMS,
     bilibili_play_ids,
     detect_platform,
+    dramabox_play_ids,
+    goodshort_play_ids,
     is_bilibili_episode_url,
     is_bilibili_season_url,
+    wetv_play_ids,
 )
+from app.core.web_media import download_with_fallback, resolution_label
 
-DEFAULT_WORKERS = 4
-DEFAULT_FRAGMENTS = 8
+DEFAULT_WORKERS, DEFAULT_FRAGMENTS = recommended_concurrency()
 
 # Bilibili (and others) split video and audio; `best` is video-only there and fails.
 # Bilibili and others may lack a merge pair; `/best` is the last resort.
@@ -70,6 +84,34 @@ FILENAME_PRESETS = (
 DEFAULT_FILENAME_PRESET = "caption"
 OUTPUT_TEMPLATE = FILENAME_PRESETS[1][2]
 
+DEFAULT_VIDEO_QUALITY = "best"
+VIDEO_QUALITY_CHOICES = (
+    ("best", "Best Quality (Auto High)"),
+    ("1080p", "1080p (Full HD)"),
+    ("720p", "720p (HD)"),
+    ("480p", "480p (SD)"),
+    ("360p", "360p (Data Saver)"),
+)
+_VIDEO_QUALITY_HEIGHTS = {
+    "1080p": 1080,
+    "720p": 720,
+    "480p": 480,
+    "360p": 360,
+}
+
+
+def format_selector_for_quality(video_quality="", platform=""):
+    """Return the yt-dlp -f selector for the chosen quality preset."""
+    height = _VIDEO_QUALITY_HEIGHTS.get((video_quality or "").strip().lower())
+    if height:
+        return (
+            f"bv*[height<={height}]+ba/b[height<={height}]/"
+            f"{TWITTER_FORMAT_SELECTOR if platform in ('twitter', 'pinterest') else FORMAT_SELECTOR}"
+        )
+    if platform in ("twitter", "pinterest"):
+        return TWITTER_FORMAT_SELECTOR
+    return FORMAT_SELECTOR
+
 # Machine-readable progress, so the UI never has to parse yt-dlp's console output.
 PROGRESS_PREFIX = "@@P"
 INFO_PREFIX = "@@I"
@@ -85,7 +127,7 @@ PROGRESS_TEMPLATE = "|".join(
 )
 INFO_TEMPLATE = (
     INFO_PREFIX
-    + "%(.{id,title,description,uploader,duration,extractor_key,webpage_url_domain})j"
+    + "%(.{id,title,description,uploader,duration,width,height,ext,extractor_key,webpage_url_domain})j"
 )
 FILE_TEMPLATE = FILE_PREFIX + "%(filepath)j"
 
@@ -110,10 +152,22 @@ def reel_id(url):
     """Short id used as the row label and as a unique suffix on the file name."""
     from urllib.parse import parse_qs, urlparse
     parts = urlparse(url)
-    query_id = parse_qs(parts.query).get("v") or parse_qs(parts.query).get("modal_id") or [""]
-    query_id = query_id[0]
+    q = parse_qs(parts.query)
+    query_id = (
+        q.get("v")
+        or q.get("modal_id")
+        or q.get("series_id")
+        or q.get("item_id")
+        or [""]
+    )[0]
     if query_id:
         return query_id
+    db_book, db_chap = dramabox_play_ids(url)
+    if db_chap or db_book:
+        return db_chap or db_book
+    gs_slug, gs_chap = goodshort_play_ids(url)
+    if gs_chap or gs_slug:
+        return gs_chap or gs_slug.split("-")[-1]
     segments = [s for s in parts.path.split("/") if s]
     if segments:
         return segments[-1]
@@ -146,8 +200,19 @@ _EPISODE_TITLE_RE = re.compile(
     r"^(?P<series>.+?)\s+(?P<ep>(?:E|EP|Episode|#)\s*\d+)\s*$",
     re.I,
 )
+_PREFIX_EPISODE_TITLE_RE = re.compile(
+    r"^(?P<ep>(?:E|EP|Episode)\s*\d+)\s*[:\-–—]\s*(?P<series>.+?)\s*$",
+    re.I,
+)
 _EPISODE_ONLY_RE = re.compile(r"^(?:E|EP|Episode|#)\s*\d+$", re.I)
 _BILI_PLAY_EP_RE = re.compile(r"/play/(\d+)/(\d+)", re.I)
+
+
+def _match_episode_title(title):
+    text = collapse_text(title)
+    if not text:
+        return None
+    return _EPISODE_TITLE_RE.match(text) or _PREFIX_EPISODE_TITLE_RE.match(text)
 
 
 def source_folder_name(title="", description="", rid=""):
@@ -174,12 +239,20 @@ def _item_field(item, name):
 def series_folder_for_items(items):
     """Movie/series folder when items are episodes of one title; else empty.
 
-    Prefers a shared ``Series E1`` title prefix, then a shared uploader for
-    bilibili.tv ``/play/{season}/{episode}`` links, then the season page title.
+    Prefers an explicit ``series`` field, a shared ``Series E1`` / ``EP01: Series``
+    title, then a shared uploader for bilibili.tv / wetv.vip ``/play/{season}/{episode}``
+    links, then the season page title.
     """
     rows = [item for item in (items or []) if item is not None]
     if not rows:
         return ""
+    explicit_series = {
+        collapse_text(_item_field(item, "series"))
+        for item in rows
+        if collapse_text(_item_field(item, "series"))
+    }
+    if len(explicit_series) == 1 and (len(rows) > 1 or _item_field(rows[0], "series_url")):
+        return source_folder_name(next(iter(explicit_series)))
     titles = [collapse_text(_item_field(item, "title")) for item in rows]
     titled = [title for title in titles if title]
     uploaders = {
@@ -187,7 +260,7 @@ def series_folder_for_items(items):
         for item in rows
         if collapse_text(_item_field(item, "uploader"))
     }
-    matches = [_EPISODE_TITLE_RE.match(title) for title in titled]
+    matches = [_match_episode_title(title) for title in titled]
     if titled and matches and all(matches):
         series_names = {match.group("series").strip() for match in matches}
         if len(series_names) == 1:
@@ -207,6 +280,13 @@ def series_folder_for_items(items):
             season, _ep = bilibili_play_ids(url)
             if season:
                 seasons.add(season)
+        else:
+            w_series, w_ep = wetv_play_ids(url)
+            if w_series and w_ep:
+                seasons.add(w_series)
+            elif w_series and not w_ep:
+                season_pages += 1
+                seasons.add(w_series)
     if len(rows) == 1 and season_pages == 1:
         name = titled[0] if titled else (next(iter(uploaders)) if uploaders else "")
         return source_folder_name(name) if name else ""
@@ -221,16 +301,19 @@ def series_folder_for_items(items):
 
 def episode_leaf_name(title="", description="", rid="", series=""):
     """Per-episode folder under a series folder; prefer ``E1`` over full title."""
-    text = collapse_text(description) or collapse_text(title)
     series = collapse_text(series)
-    if text and series:
-        match = _EPISODE_TITLE_RE.match(text)
-        if match and match.group("series").strip().lower() == series.lower():
-            return source_folder_name(match.group("ep"))
-        prefix = f"{series} "
-        if text.lower().startswith(prefix.lower()) and len(text) > len(prefix):
-            return source_folder_name(text[len(prefix):])
-    return source_folder_name(title, description, rid)
+    if series:
+        for candidate in (collapse_text(title), collapse_text(description)):
+            if not candidate:
+                continue
+            match = _match_episode_title(candidate)
+            if match and match.group("series").strip().lower() == series.lower():
+                return source_folder_name(match.group("ep"))
+            prefix = f"{series} "
+            if candidate.lower().startswith(prefix.lower()) and len(candidate) > len(prefix):
+                return source_folder_name(candidate[len(prefix):])
+    text = collapse_text(title) if series else (collapse_text(description) or collapse_text(title))
+    return source_folder_name(text, "", rid)
 
 
 def is_series_package(item):
@@ -241,30 +324,58 @@ def is_series_package(item):
 def group_series_entries(entries, *, existing_urls=None):
     """Prepend a movie package row and tag episode rows for tree grouping.
 
-    Used for bilibili.tv season extracts so Grabber shows
+    Used for bilibili.tv / WeTV / drama season extracts so Grabber shows
     ``Back as Immortal Lord`` → E1, E2, … instead of a flat list.
     """
     rows = [dict(item) if isinstance(item, dict) else {"url": item} for item in (entries or [])]
     rows = [row for row in rows if row.get("url")]
-    if len(rows) < 2:
+    if not rows:
         return rows
     episodes = [row for row in rows if not is_series_package(row)]
-    if len(episodes) < 2:
+    if not episodes:
         return rows
+    known = set(existing_urls or [])
+    if len(episodes) < 2:
+        ep = episodes[0]
+        if not (ep.get("series") and ep.get("series_url")):
+            url = str(ep.get("url") or "")
+            season, episode = bilibili_play_ids(url)
+            if not (season and episode):
+                season, episode = wetv_play_ids(url)
+            if season and episode:
+                host = urlparse(url).netloc or "www.bilibili.tv"
+                candidate_url = f"https://{host}/en/play/{season}"
+                if candidate_url in known:
+                    movie = series_folder_for_items(episodes)
+                    if movie:
+                        ep = dict(ep)
+                        ep["series"] = movie
+                        ep["series_url"] = candidate_url
+                        return [ep]
+            return rows
     movie = series_folder_for_items(episodes)
     if not movie:
         return rows
+    explicit_urls = [
+        collapse_text(row.get("series_url"))
+        for row in episodes
+        if collapse_text(row.get("series_url"))
+    ]
     seasons = set()
     host = ""
     for row in episodes:
         url = str(row.get("url") or "")
         season, episode = bilibili_play_ids(url)
+        if not (season and episode):
+            season, episode = wetv_play_ids(url)
         if season and episode:
             seasons.add(season)
             if not host:
-                from urllib.parse import urlparse
                 host = urlparse(url).netloc or "www.bilibili.tv"
-    if len(seasons) != 1:
+    if explicit_urls and len(set(explicit_urls)) == 1:
+        season_url = explicit_urls[0]
+        season_id = next(iter(seasons)) if len(seasons) == 1 else reel_id(season_url) or movie
+    elif len(seasons) != 1:
         # Non-bili shared title prefix still groups under a synthetic series URL.
         season_url = f"series:{movie}"
         season_id = movie
@@ -554,25 +665,31 @@ def parse_info_line(line):
         return None
     if not isinstance(payload, dict):
         return None
-    return {
+    ext = collapse_text(payload.get("ext"))
+    qual = resolution_label(
+        payload.get("width"),
+        payload.get("height"),
+        f"video.{ext}" if ext else "",
+    )
+    info = {
         "title": collapse_text(payload.get("title")),
         "description": collapse_text(payload.get("description")),
         "uploader": collapse_text(payload.get("uploader")),
         "duration": _number(payload.get("duration")),
         "extractor_key": collapse_text(payload.get("extractor_key")),
         "webpage_url_domain": collapse_text(payload.get("webpage_url_domain")),
-        "platform": extra_platform_from_key(payload.get("extractor_key")),
+        "platform": extra_platform_from_key(
+            payload.get("extractor_key"),
+            payload.get("webpage_url_domain"),
+        ),
     }
+    if qual:
+        info["quality"] = qual
+    return info
 
 
-def extra_platform_from_key(key):
-    key = (key or "").lower()
-    if "bili" in key:
-        return "bilibili"
-    for name in ("facebook", "instagram", "youtube", "tiktok", "twitter", "douyin", "kuaishou", "pinterest"):
-        if name in key:
-            return name
-    return ""
+def extra_platform_from_key(key, domain=""):
+    return platform_from_extractor(key or "", domain or "")
 
 
 def parse_file_line(line):
@@ -953,22 +1070,23 @@ def _pinterest_media_fallback(
 def _yt_dlp_args(
     url, output_dir, fragments, archive_path, ffmpeg_location="",
     cookies_browser="", filename_template="", cookies_file="", dateafter="",
-    limit_rate="", media_kinds=None,
+    limit_rate="", media_kinds=None, video_quality="", gpu_accel="", workers=DEFAULT_WORKERS,
 ):
     ffmpeg_location = resolve_ffmpeg(ffmpeg_location)
     name = resolve_filename_template(filename_template)
     platform = detect_platform(url)
-    if platform in ("twitter", "pinterest"):
-        fmt = TWITTER_FORMAT_SELECTOR
-    else:
-        fmt = FORMAT_SELECTOR
+    if platform == "wetv" and name == OUTPUT_TEMPLATE:
+        name = "EP%(episode_number)02d_ %(series,title).60B [%(id)s].%(ext)s"
+    elif (platform in MOVIE_DRAMA_PLATFORMS or platform in ("bilibili", "bilitv")) and name == OUTPUT_TEMPLATE:
+        name = "%(title,id).80B [%(id)s].%(ext)s"
+    fmt = format_selector_for_quality(video_quality, platform)
     cookies_browser = (cookies_browser or "").strip()
     cookies_file = (cookies_file or "").strip()
     kinds = normalize_media_kinds(media_kinds)
     want_video = "video" in kinds
     want_music = "music" in kinds
     want_image = "image" in kinds
-    if platform in ("douyin", "kuaishou") and not cookies_browser and not cookies_file:
+    if platform in ("douyin", "kuaishou", "kwai") and not cookies_browser and not cookies_file:
         cookies_browser = "chrome"
     args = [
         *yt_dlp_command_prefix(),
@@ -978,8 +1096,9 @@ def _yt_dlp_args(
         "-f", fmt,
         "-i",                                   # skip broken/removed reels
         "-N", str(fragments),                   # fragments of ONE reel, in parallel
-        "--retries", "5",
-        "--fragment-retries", "5",
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--file-access-retries", "10",
         "--socket-timeout", "20",
         "--no-overwrites",
         "--continue",
@@ -988,20 +1107,22 @@ def _yt_dlp_args(
         "--progress-template", f"download:{PROGRESS_TEMPLATE}",
         "--print", f"video:{INFO_TEMPLATE}",
         "--print", f"after_move:{FILE_TEMPLATE}",
-        "--trim-filenames", "180",
+        "--trim-filenames", "120",
         "--output", os.path.join(output_dir, name),
     ]
     if sys.platform == "win32":
         args.append("--windows-filenames")
     if ffmpeg_location:
         args.extend(("--ffmpeg-location", ffmpeg_location))
+    if gpu_accel:
+        args.extend(("--postprocessor-args", ffmpeg_postprocessor_arg(gpu_accel, workers=workers)))
     if cookies_browser:
         args.extend(("--cookies-from-browser", cookies_browser))
     if cookies_file:
         args.extend(("--cookies", cookies_file))
     if platform == "twitter":
         args.extend(("--extractor-args", TWITTER_EXTRACTOR_ARGS))
-    if platform in ("douyin", "kuaishou"):
+    if platform in ("douyin", "kuaishou", "kwai", "snackvideo", "xiaohongshu") or platform in MOVIE_DRAMA_PLATFORMS:
         args.extend(("--impersonate", "chrome"))
     if dateafter and platform == "tiktok":
         args.extend(("--dateafter", dateafter))
@@ -1060,13 +1181,42 @@ def _download_one(
     log, on_progress, should_stop, group, cookies_browser="",
     filename_template="", cookies_file="", dateafter="",
     limit_rate="", media_kinds=None, source_folder="", kind_folders=None,
-    channel="",
+    channel="", video_quality="", gpu_accel="", workers=DEFAULT_WORKERS,
 ):
     check_stop(should_stop)
     kinds = normalize_media_kinds(media_kinds)
     dest_dir = resolve_item_dir(output_dir, source_folder)
     os.makedirs(dest_dir, exist_ok=True)
     on_progress(url, {"status": "downloading"})
+    platform = detect_platform(url)
+
+    if platform in WEB_FALLBACK_ONLY_PLATFORMS:
+        try:
+            if download_with_fallback(
+                url,
+                dest_dir,
+                item_id=reel_id(url),
+                archive_path=archive_path,
+                ffmpeg_location=ffmpeg_location,
+                log=log,
+                on_progress=on_progress,
+                should_stop=should_stop,
+                media_kinds=kinds,
+                gpu_accel=gpu_accel or "auto",
+                workers=workers,
+            ):
+                organize_media_into_kinds(dest_dir, kinds, kind_folders)
+                relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
+                relocated = relocate_artifacts(dest_dir, kinds)
+                if relocated:
+                    on_progress(url, {"filepath": relocated[0]})
+                on_progress(url, {"status": "done", "code": 0})
+                return 0
+        except StopRequested:
+            on_progress(url, {"status": "cancelled"})
+            raise
+        on_progress(url, {"status": "failed", "code": 1})
+        return 1
 
     process = subprocess.Popen(
         _yt_dlp_args(
@@ -1077,6 +1227,9 @@ def _download_one(
             dateafter=dateafter,
             limit_rate=limit_rate,
             media_kinds=kinds,
+            video_quality=video_quality,
+            gpu_accel=gpu_accel,
+            workers=workers,
         ),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,          # one pipe, so a full stderr can never deadlock
@@ -1142,6 +1295,34 @@ def _download_one(
                 url, dest_dir, archive_path, log=log,
                 on_progress=on_progress, should_stop=should_stop,
                 media_kinds=kinds,
+            ):
+                organize_media_into_kinds(dest_dir, kinds, kind_folders)
+                relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
+                relocated = relocate_artifacts(dest_dir, kinds)
+                if relocated:
+                    on_progress(url, {"filepath": relocated[0]})
+                on_progress(url, {"status": "done", "code": 0})
+                return 0
+        except StopRequested:
+            on_progress(url, {"status": "cancelled"})
+            raise
+    _NATIVE_YTDLP_VIDEO_PLATFORMS = {
+        "youtube", "bilibili", "bilitv", "wetv", "iqiyi", "tiktok", "douyin",
+    }
+    if (code != 0 or not _has_downloaded_media(dest_dir)) and platform not in _NATIVE_YTDLP_VIDEO_PLATFORMS:
+        try:
+            if download_with_fallback(
+                url,
+                dest_dir,
+                item_id=reel_id(url),
+                archive_path=archive_path,
+                ffmpeg_location=ffmpeg_location,
+                log=log,
+                on_progress=on_progress,
+                should_stop=should_stop,
+                media_kinds=kinds,
+                gpu_accel=gpu_accel or "auto",
+                workers=workers,
             ):
                 organize_media_into_kinds(dest_dir, kinds, kind_folders)
                 relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
@@ -1240,6 +1421,8 @@ def download_urls(
     group_by_source=True,
     url_media_kinds=None,
     kind_folders=None,
+    video_quality="",
+    gpu_accel="",
 ):
     """Download every item URL, `workers` at a time. Returns the number of failures."""
     output_root = output_root or default_output_root()
@@ -1271,11 +1454,23 @@ def download_urls(
         return 0
 
     log(f"Downloading {len(urls)} item(s) into {output_dir}")
-    log(f"{workers} item(s) at a time, {fragments} fragment(s) per item.")
+    active_workers = min(workers, max(1, len(urls)))
+    threads_per_worker = ffmpeg_threads_per_worker(active_workers)
+    backend = resolve_gpu_backend(gpu_accel or "auto")
+    log(
+        f"{active_workers} item(s) at a time, {fragments} fragment(s) per item "
+        f"(GPU: {backend.upper()}, {threads_per_worker} thread(s)/worker)."
+    )
 
     group = _ProcessGroup()
     failures = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    extra_kw = {}
+    if video_quality:
+        extra_kw["video_quality"] = video_quality
+    if gpu_accel:
+        extra_kw["gpu_accel"] = gpu_accel
+        extra_kw["workers"] = active_workers
+    with ThreadPoolExecutor(max_workers=active_workers) as pool:
         futures = {
             pool.submit(
                 _download_one,
@@ -1288,6 +1483,7 @@ def download_urls(
                 else (source_folder_name("", "", reel_id(url)) if group_by_source else ""),
                 kind_folders,
                 channel,
+                **extra_kw,
             ): url
             for url in urls
         }

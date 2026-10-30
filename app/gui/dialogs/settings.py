@@ -31,9 +31,11 @@ from app.core import telegram_notify
 from app.core.download import (
     DEFAULT_FILENAME_PRESET,
     DEFAULT_FRAGMENTS,
+    DEFAULT_VIDEO_QUALITY,
     DEFAULT_WORKERS,
     FILENAME_PRESETS,
     OUTPUT_TEMPLATE,
+    VIDEO_QUALITY_CHOICES,
     filename_preset_for_template,
     filename_template_for_preset,
     resolve_filename_template,
@@ -43,6 +45,12 @@ from app.core.i18n import tr
 from app.core.cookies import list_cookie_profile_choices
 from app.core.platform_icons import host_color_icon
 from app.core.runtime import default_output_root, resolve_output_root
+from app.core.sysinfo import (
+    DEFAULT_GPU_ACCEL,
+    GPU_ACCEL_MODES,
+    hardware_profile_summary,
+    recommended_concurrency,
+)
 from app.core.theme import DEFAULT_DARK, DEFAULT_PRIMARY, THEME_STYLES, normalize_hex
 
 COOKIE_BROWSERS = (
@@ -246,10 +254,37 @@ class SettingsDialog(QDialog):
         filename_layout.setSpacing(6)
         filename_layout.addWidget(self.filename_preset)
         filename_layout.addWidget(self.filename)
+        self.video_quality = QComboBox()
+        for key, label in VIDEO_QUALITY_CHOICES:
+            self.video_quality.addItem(label, key)
+        self.video_quality.setToolTip(
+            "Default video download quality. Best Quality (Auto High) picks the "
+            "highest available resolution and merges video + audio."
+        )
+        self.gpu_accel = QComboBox()
+        for key, label in GPU_ACCEL_MODES:
+            self.gpu_accel.addItem(label, key)
+        self.gpu_accel.setToolTip(
+            "GPU Acceleration & Thread Control:\n"
+            "• Speeds up processing using graphics hardware (NVENC / Quick Sync / AMF)\n"
+            "• Balances CPU and GPU load across concurrent workers\n"
+            "• Reduces time for downloads, stream remuxing, and conversions"
+        )
         self.workers = QSpinBox()
         self.workers.setRange(1, 16)
         self.fragments = QSpinBox()
         self.fragments.setRange(1, 32)
+        hw_row = QWidget()
+        hw_layout = QHBoxLayout(hw_row)
+        hw_layout.setContentsMargins(0, 0, 0, 0)
+        hw_layout.setSpacing(8)
+        self.hw_tune_btn = QPushButton("Auto-detect hardware")
+        self.hw_tune_btn.setToolTip(hardware_profile_summary())
+        self.hw_tune_btn.clicked.connect(self._apply_hardware_concurrency)
+        self.hw_summary_label = QLabel(hardware_profile_summary())
+        self.hw_summary_label.setWordWrap(True)
+        hw_layout.addWidget(self.hw_tune_btn, 0)
+        hw_layout.addWidget(self.hw_summary_label, 1)
         self.speed_limit_on = QCheckBox("Speed limit")
         self.speed_limit = QLineEdit()
         self.speed_limit.setPlaceholderText("50K")
@@ -262,10 +297,19 @@ class SettingsDialog(QDialog):
         speed_layout.addWidget(self.speed_limit, 1)
         form.addRow("Download folder", self.output)
         form.addRow("", self.group_downloads)
+        form.addRow("Video quality", self.video_quality)
+        form.addRow("GPU acceleration", self.gpu_accel)
         form.addRow("File name", filename_row)
         form.addRow("Parallel downloads", self.workers)
         form.addRow("Fragments per item", self.fragments)
+        form.addRow("Hardware tuning", hw_row)
         form.addRow("Download speed", speed_row)
+
+    def _apply_hardware_concurrency(self):
+        workers, fragments = recommended_concurrency()
+        self.workers.setValue(workers)
+        self.fragments.setValue(fragments)
+        self.gpu_accel.setCurrentIndex(max(self.gpu_accel.findData(DEFAULT_GPU_ACCEL), 0))
 
     def _build_grabber_tab(self):
         form = self._add_tab("Grabber")
@@ -586,6 +630,12 @@ class SettingsDialog(QDialog):
             self._set_filename_preset("custom")
         else:
             self._set_filename_preset(preset or DEFAULT_FILENAME_PRESET)
+        vqual = get("video_quality", DEFAULT_VIDEO_QUALITY, str) or DEFAULT_VIDEO_QUALITY
+        vq_index = self.video_quality.findData(vqual)
+        self.video_quality.setCurrentIndex(max(vq_index, 0))
+        gaccel = get("gpu_accel", DEFAULT_GPU_ACCEL, str) or DEFAULT_GPU_ACCEL
+        ga_index = self.gpu_accel.findData(gaccel)
+        self.gpu_accel.setCurrentIndex(max(ga_index, 0))
         self.workers.setValue(int(get("workers", DEFAULT_WORKERS)))
         self.fragments.setValue(int(get("fragments", DEFAULT_FRAGMENTS)))
         dark = get("dark", DEFAULT_DARK, bool)
@@ -630,6 +680,8 @@ class SettingsDialog(QDialog):
         self.output.setText(default_output_root())
         self.group_downloads.setChecked(False)
         self._set_filename_preset(DEFAULT_FILENAME_PRESET)
+        self.video_quality.setCurrentIndex(max(self.video_quality.findData(DEFAULT_VIDEO_QUALITY), 0))
+        self.gpu_accel.setCurrentIndex(max(self.gpu_accel.findData(DEFAULT_GPU_ACCEL), 0))
         self.workers.setValue(DEFAULT_WORKERS)
         self.fragments.setValue(DEFAULT_FRAGMENTS)
         self.theme_style.setCurrentIndex(max(self.theme_style.findData(DEFAULT_DARK), 0))
@@ -677,6 +729,8 @@ class SettingsDialog(QDialog):
         )
         self.settings.setValue("filename_template", template)
         self.settings.setValue("filename_preset", preset)
+        self.settings.setValue("video_quality", self.video_quality.currentData() or DEFAULT_VIDEO_QUALITY)
+        self.settings.setValue("gpu_accel", self.gpu_accel.currentData() or DEFAULT_GPU_ACCEL)
         self.settings.setValue("workers", self.workers.value())
         self.settings.setValue("fragments", self.fragments.value())
         self.settings.setValue("dark", bool(self.theme_style.currentData()))

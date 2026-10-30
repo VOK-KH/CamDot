@@ -599,6 +599,57 @@ class SeriesPackageProgress(unittest.TestCase):
         self.assertEqual(self.model._display_percent(root), 100.0)
         self.assertEqual(self.model._display_status(root), "done")
 
+    def test_root_title_check_update_and_remove_cascade_to_episodes(self):
+        self.assertEqual(
+            self.model.index(0, COL_TITLE).data(),
+            "Back as Immortal Lord (2 EP)",
+        )
+        # Checking one episode makes the root folder PartiallyChecked.
+        self.model.setData(
+            self.model.index(1, COL_CHECK),
+            Qt.CheckState.Checked,
+            Qt.ItemDataRole.CheckStateRole,
+        )
+        self.assertEqual(
+            self.model.index(0, COL_CHECK).data(Qt.ItemDataRole.CheckStateRole),
+            Qt.CheckState.PartiallyChecked,
+        )
+        self.assertEqual(
+            self.model.checked_urls(),
+            ["https://www.bilibili.tv/en/play/2129061/1"],
+        )
+        # Checking the root folder checks all episodes.
+        self.model.setData(
+            self.model.index(0, COL_CHECK),
+            Qt.CheckState.Checked,
+            Qt.ItemDataRole.CheckStateRole,
+        )
+        self.assertEqual(
+            self.model.checked_urls(),
+            [
+                "https://www.bilibili.tv/en/play/2129061/1",
+                "https://www.bilibili.tv/en/play/2129061/2",
+            ],
+        )
+        # Unchecking the root folder unchecks all episodes.
+        self.model.setData(
+            self.model.index(0, COL_CHECK),
+            Qt.CheckState.Unchecked,
+            Qt.ItemDataRole.CheckStateRole,
+        )
+        self.assertEqual(self.model.checked_urls(), [])
+        # Updating save_dir / title on the root folder cascades to all episodes.
+        self.model.update_reel(
+            "https://www.bilibili.tv/en/play/2129061",
+            save_dir="D:/Movies/Immortal",
+            title="Immortal Lord Renamed",
+        )
+        self.assertEqual(self.model.reel_at(1).save_dir, "D:/Movies/Immortal")
+        self.assertEqual(self.model.reel_at(2).series, "Immortal Lord Renamed")
+        # Removing the root folder removes all episode children too.
+        self.model.remove_urls(["https://www.bilibili.tv/en/play/2129061"])
+        self.assertEqual(self.model.rowCount(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

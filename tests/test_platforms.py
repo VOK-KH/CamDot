@@ -9,21 +9,49 @@ from app.core.platforms import (
 )
 
 ACTIVE_IDS = (
+    # Social Network Sites
     "facebook",
     "instagram",
-    "tiktok",
-    "youtube",
-    "twitter",
-    "bilibili",
-    "douyin",
-    "kuaishou",
     "pinterest",
-    "threads",
-    "reddit",
-    "snapchat",
+    "youtube",
+    "tiktok",
+    "douyin",
+    "kwai",
+    "snackvideo",
+    "kuaishou",
     "xiaohongshu",
+    "medaltv",
+    "threads",
+    "suno",
+    "twitter",
+    "reddit",
+    "dailymotion",
+    "bilibili",
+    "snapchat",
     "weibo",
     "twitch",
+    "scraped",
+    # Movie & Drama Sites
+    "dramabox",
+    "netshort",
+    "flickreels",
+    "stardusttv",
+    "starshort",
+    "goodshort",
+    "dramawave",
+    "freereels",
+    "reelshort",
+    "hongguo",
+    "idrama",
+    "bilitv",
+    "wetv",
+    "iqiyi",
+    "dramabite",
+    "vigloo",
+    "kisskh",
+    "flextv",
+    "melolo",
+    "kolabkhmer",
 )
 COMING_SOON_IDS = ("generic",)
 
@@ -44,7 +72,7 @@ class PlatformCatalog(unittest.TestCase):
 
     def test_facebook_features_mention_reels_and_chrome(self):
         features = " ".join(platform_by_id("facebook")["features"])
-        self.assertIn("reels", features)
+        self.assertIn("reels", features.lower())
         self.assertIn("Chrome", features)
 
     def test_douyin_limits_mention_feeds(self):

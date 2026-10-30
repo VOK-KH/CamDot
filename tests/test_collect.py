@@ -989,6 +989,99 @@ class CollectEntries(unittest.TestCase):
         self.assertIsNone(entries[0]["duration"])
         self.assertEqual(streamed[0]["url"], entries[0]["url"])
 
+    def test_pinterest_search_and_related_feeds_yield_pin_urls(self):
+        class FakeResp:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=20):
+            url = request.full_url if hasattr(request, "full_url") else request
+            if "BaseSearchResource/get/" in url:
+                return FakeResp(json.dumps({
+                    "resource_response": {
+                        "data": {
+                            "results": [
+                                {"type": "pin", "id": "777", "grid_title": "Search Pin"},
+                            ]
+                        },
+                        "bookmark": None,
+                    },
+                }).encode())
+            if "RelatedPinFeedResource/get/" in url:
+                return FakeResp(json.dumps({
+                    "resource_response": {
+                        "data": [
+                            {"type": "pin", "id": "888", "grid_title": "Related Pin"},
+                        ],
+                        "bookmark": None,
+                    },
+                }).encode())
+            raise AssertionError(f"unexpected url {url}")
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.download.urllib.request.urlopen", side_effect=fake_urlopen):
+                _, search_entries = collect_entries(
+                    "pin",
+                    "https://www.pinterest.com/search/pins/?q=cats",
+                    output_root=folder,
+                    log=lambda *_: None,
+                )
+                _, related_entries = collect_entries(
+                    "pin",
+                    "https://www.pinterest.com/pin/123456/related/",
+                    output_root=folder,
+                    log=lambda *_: None,
+                )
+        self.assertEqual(search_entries[0]["url"], "https://www.pinterest.com/pin/777/")
+        self.assertEqual(related_entries[0]["url"], "https://www.pinterest.com/pin/888/")
+
+    def test_scraped_direct_media_link_collects_without_ytdlp(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _, entries = collect_entries(
+                "ext",
+                "https://cdn.example-stream.org/media/episode_01.mp4",
+                output_root=folder,
+                log=lambda *_: None,
+            )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["platform"], "scraped")
+        self.assertEqual(entries[0]["title"], "episode_01")
+
+    def test_wetv_episode_url_lists_series_episodes_and_skips_teasers(self):
+        page_data = json.dumps({
+            "coverInfo": {"title": "Love on Hire (Uncut Ver.)"},
+            "videoList": [
+                {"vid": "f41025azkf1", "title": "EP01: Love on Hire (Uncut Ver.)", "episode": "01", "isTrailer": 0, "duration": 3474},
+                {"vid": "l4102n1z1oo", "title": "EP02: Love on Hire (Uncut Ver.)", "episode": "02", "isTrailer": 0, "duration": 3543},
+                {"vid": "q4102bvqyt1", "title": "Teaser EP02: Love on Hire (Uncut Ver.)", "episode": "02", "isTrailer": 1, "duration": 30},
+            ],
+        })
+        html = f'<html><head><script id="__NEXT_DATA__" type="application/json">{json.dumps({"props": {"pageProps": {"data": page_data}}})}</script></head></html>'
+        logs = []
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect.fetch_text", return_value=(html, "https://wetv.vip/en/play/4w64qxojf3p58dw")):
+                _, entries = collect_entries(
+                    "wetv",
+                    "https://wetv.vip/en/play/4w64qxojf3p58dw/f41025azkf1-EP01%3A_Love_on_Hire_(Uncut_Ver.)",
+                    output_root=folder,
+                    log=logs.append,
+                )
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["url"], "https://wetv.vip/en/play/4w64qxojf3p58dw/f41025azkf1")
+        self.assertEqual(entries[0]["title"], "Love on Hire (Uncut Ver.) E1")
+        self.assertEqual(entries[0]["series"], "Love on Hire (Uncut Ver.)")
+        self.assertEqual(entries[1]["title"], "Love on Hire (Uncut Ver.) E2")
+        self.assertTrue(any("Skipped 1 teaser/extra" in line for line in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

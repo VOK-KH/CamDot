@@ -73,6 +73,9 @@ class BundledIcon(unittest.TestCase):
     def test_known_platform_icon_renders(self):
         self.assertFalse(icon_for("youtube").isNull())
         self.assertFalse(icon_for("twitter").isNull())
+        for drama_id in ("dramabox", "netshort", "flickreels", "stardusttv", "starshort", "goodshort", "dramawave", "freereels", "reelshort", "idrama", "bilitv", "wetv", "dramabite", "vigloo", "flextv", "melolo"):
+            with self.subTest(platform=drama_id):
+                self.assertFalse(icon_for(drama_id).isNull())
 
 
 if __name__ == "__main__":

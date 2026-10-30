@@ -1,13 +1,15 @@
 """URL cleaning, platform detection, and source classification."""
+import os
 import re
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlunparse
 
-FACEBOOK_HOSTS = ("facebook.com", "fb.com")
-INSTAGRAM_HOSTS = ("instagram.com",)
-TIKTOK_HOSTS = ("tiktok.com",)
+FACEBOOK_HOSTS = ("facebook.com", "fb.com", "fb.watch")
+INSTAGRAM_HOSTS = ("instagram.com", "instagr.am")
+TIKTOK_HOSTS = ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com")
 YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
-TWITTER_HOSTS = ("x.com", "twitter.com", "t.co")
+TWITTER_HOSTS = ("x.com", "twitter.com", "t.co", "fxtwitter.com", "vxtwitter.com")
 BILIBILI_HOSTS = ("bilibili.tv", "bilibili.com", "b23.tv")
+BILITV_HOSTS = ("bilitv.com",)
 BILIBILI_TRACKING = ("bstar_from", "spm_id_from", "from_spmid", "vd_source", "from")
 INSTAGRAM_TRACKING = (
     "hl", "igsh", "igshid", "img_index", "e", "s",
@@ -16,21 +18,87 @@ INSTAGRAM_TRACKING = (
 )
 INSTAGRAM_SINGLE_KINDS = ("p", "reel", "tv")
 INSTAGRAM_FEED_TABS = ("reels", "reposts", "tagged")
-DOUYIN_HOSTS = ("douyin.com", "iesdouyin.com")
-KUAISHOU_HOSTS = ("kuaishou.com", "gifshow.com", "kwai.com")
+DOUYIN_HOSTS = ("douyin.com", "iesdouyin.com", "v.douyin.com")
+KWAI_HOSTS = ("kwai.com", "kwai-video.com", "kw.ai", "s.kw.ai")
+SNACKVIDEO_HOSTS = ("snackvideo.com", "sck.io")
+KUAISHOU_HOSTS = ("kuaishou.com", "gifshow.com", "v.kuaishou.com")
 PINTEREST_HOSTS = ("pinterest.com", "pin.it")
-THREADS_HOSTS = ("threads.net",)
-REDDIT_HOSTS = ("reddit.com", "redd.it", "old.reddit.com")
-SNAPCHAT_HOSTS = ("snapchat.com",)
 XIAOHONGSHU_HOSTS = ("xiaohongshu.com", "xhslink.com")
+MEDALTV_HOSTS = ("medal.tv",)
+THREADS_HOSTS = ("threads.com", "threads.net")
+SUNO_HOSTS = ("suno.com", "suno.ai")
+REDDIT_HOSTS = ("reddit.com", "redd.it", "old.reddit.com", "v.redd.it", "i.redd.it")
+DAILYMOTION_HOSTS = ("dailymotion.com", "dai.ly")
+SNAPCHAT_HOSTS = ("snapchat.com",)
 WEIBO_HOSTS = ("weibo.com", "weibo.cn")
 TWITCH_HOSTS = ("twitch.tv",)
+
+# Movie & Drama hosts
+DRAMABOX_HOSTS = ("dramaboxdb.com", "dramabox.com", "dramaboxapp.com")
+NETSHORT_HOSTS = ("netshort.com",)
+FLICKREELS_HOSTS = ("flickreels.net", "flickreels.com")
+STARDUSTTV_HOSTS = ("stardusttv.net",)
+STARSHORT_HOSTS = ("starshort.tv",)
+GOODSHORT_HOSTS = ("goodshort.com",)
+DRAMAWAVE_HOSTS = ("mydramawave.com", "dramawave.com")
+FREEREELS_HOSTS = ("free-reels.com", "freereels.com")
+REELSHORT_HOSTS = ("reelshort.com",)
+HONGGUO_HOSTS = ("hongguoduanju.com",)
+IDRAMA_HOSTS = ("idrama.video",)
+WETV_HOSTS = ("wetv.vip", "v.qq.com")
+IQIYI_HOSTS = ("iq.com", "iqiyi.com")
+DRAMABITE_HOSTS = ("dramabite.media",)
+VIGLOO_HOSTS = ("vigloo.com",)
+KISSKH_HOSTS = ("kisskh.org", "kisskh.ovh", "kisskh.co", "kisskh.do", "kisskh.la", "kisskh.id", "kisskh.me")
+FLEXTV_HOSTS = ("flextv.cc",)
+MELOLO_HOSTS = ("melolo.org", "melolo.com")
+KOLABKHMER_HOSTS = ("kolabkhmer.com",)
+
+MOVIE_DRAMA_PLATFORMS = frozenset({
+    "dramabox",
+    "netshort",
+    "flickreels",
+    "stardusttv",
+    "starshort",
+    "goodshort",
+    "dramawave",
+    "freereels",
+    "reelshort",
+    "hongguo",
+    "idrama",
+    "bilitv",
+    "wetv",
+    "iqiyi",
+    "dramabite",
+    "vigloo",
+    "kisskh",
+    "flextv",
+    "melolo",
+    "kolabkhmer",
+})
+
+# Platforms without a native yt-dlp extractor: go straight to web_media.py.
+WEB_FALLBACK_ONLY_PLATFORMS = (
+    (MOVIE_DRAMA_PLATFORMS - {"wetv", "iqiyi", "bilitv"})
+    | {"suno", "scraped"}
+)
+
+SCRAPED_MEDIA_EXTS = frozenset({
+    ".mp4", ".m3u8", ".mpd", ".webm", ".mkv", ".mov", ".ts", ".flv", ".m4v",
+    ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus",
+    ".jpg", ".jpeg", ".png", ".webp", ".gif",
+})
+
 PINTEREST_RESERVED = frozenset({
     "pin", "ideas", "search", "today", "news", "settings", "resource",
 })
+PINTEREST_RELATED_TAILS = frozenset({"related", "visual-search", "more-ideas"})
 DOUYIN_USER_PREFIX = "douyinuser:"
 
 REELS_SEGMENTS = {"reel", "reels", "videos"}
+FACEBOOK_SINGLE_ROOTS = {
+    "photo", "photo.php", "photos", "watch", "permalink.php", "posts", "share", "story.php",
+}
 
 # TikTok profile pages are often blocked, but yt-dlp can list a creator from the
 # secondary user id ("sec_uid") that every one of their videos carries.
@@ -50,12 +118,31 @@ UNSUPPORTED_FEED_MESSAGES = {
 URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>'\"\]\[{}]+", re.IGNORECASE)
 
 
+def _strip_trailing_url_punct(candidate):
+    """Strip sentence punctuation after a URL while keeping balanced ``(...)``."""
+    while candidate:
+        last = candidate[-1]
+        if last in ",;:!?]}":
+            candidate = candidate[:-1]
+            continue
+        if last == ")":
+            if candidate.count(")") > candidate.count("("):
+                candidate = candidate[:-1]
+                continue
+            break
+        if last == ".":
+            candidate = candidate[:-1]
+            continue
+        break
+    return candidate
+
+
 def extract_supported_urls(text):
-    """Extract unique supported social URLs from clipboard/plain text."""
+    """Extract unique supported social/drama/media URLs from clipboard/plain text."""
     found = []
     seen = set()
     for match in URL_IN_TEXT_RE.findall(text or ""):
-        candidate = match.rstrip(".,;:!?)]}")
+        candidate = _strip_trailing_url_punct(match)
         if not is_supported_source(candidate):
             continue
         try:
@@ -83,7 +170,10 @@ def _with_scheme(url):
 
 
 def _host(url):
-    host = urlparse(_with_scheme(url) if "://" not in clean_url(url) else clean_url(url) or url).netloc.lower()
+    raw = clean_url(url)
+    if "://" in raw and not raw.lower().startswith(("http://", "https://")):
+        return ""
+    host = urlparse(_with_scheme(raw) if "://" not in raw else raw or url).netloc.lower()
     return host.split(":")[0].removeprefix("www.").removeprefix("m.").removeprefix("music.")
 
 
@@ -93,6 +183,31 @@ def _matches_host(host, suffixes):
 
 def _segments(path):
     return [part for part in path.split("/") if part]
+
+
+def is_scraped_media_url(url):
+    """True for direct media / manifest links captured by browser extensions."""
+    raw = clean_url(url)
+    if not raw:
+        return False
+    if "://" in raw and not raw.lower().startswith(("http://", "https://")):
+        return False
+    try:
+        parts = urlparse(_with_scheme(raw))
+    except ValueError:
+        return False
+    if "." not in parts.netloc:
+        return False
+    ext = os.path.splitext(unquote(parts.path or ""))[1].lower()
+    if ext in SCRAPED_MEDIA_EXTS:
+        return True
+    query = parse_qs(parts.query)
+    for key in ("mime", "content_type", "type"):
+        for val in query.get(key) or ():
+            lowered = val.lower()
+            if lowered.startswith(("video/", "audio/", "image/", "application/vnd.apple.mpegurl", "application/dash+xml")):
+                return True
+    return False
 
 
 def is_tiktok_user_feed(url):
@@ -138,8 +253,51 @@ def douyin_user_feed(sec_uid):
     return f"https://www.douyin.com/user/{sec_uid}"
 
 
+_HOST_DETECTION_TABLE = (
+    (FACEBOOK_HOSTS, "facebook"),
+    (INSTAGRAM_HOSTS, "instagram"),
+    (YOUTUBE_HOSTS, "youtube"),
+    (TWITTER_HOSTS, "twitter"),
+    (BILITV_HOSTS, "bilitv"),
+    (BILIBILI_HOSTS, "bilibili"),
+    (DOUYIN_HOSTS, "douyin"),
+    (KWAI_HOSTS, "kwai"),
+    (SNACKVIDEO_HOSTS, "snackvideo"),
+    (KUAISHOU_HOSTS, "kuaishou"),
+    (PINTEREST_HOSTS, "pinterest"),
+    (XIAOHONGSHU_HOSTS, "xiaohongshu"),
+    (MEDALTV_HOSTS, "medaltv"),
+    (THREADS_HOSTS, "threads"),
+    (SUNO_HOSTS, "suno"),
+    (REDDIT_HOSTS, "reddit"),
+    (DAILYMOTION_HOSTS, "dailymotion"),
+    (SNAPCHAT_HOSTS, "snapchat"),
+    (WEIBO_HOSTS, "weibo"),
+    (TWITCH_HOSTS, "twitch"),
+    (DRAMABOX_HOSTS, "dramabox"),
+    (NETSHORT_HOSTS, "netshort"),
+    (FLICKREELS_HOSTS, "flickreels"),
+    (STARDUSTTV_HOSTS, "stardusttv"),
+    (STARSHORT_HOSTS, "starshort"),
+    (GOODSHORT_HOSTS, "goodshort"),
+    (DRAMAWAVE_HOSTS, "dramawave"),
+    (FREEREELS_HOSTS, "freereels"),
+    (REELSHORT_HOSTS, "reelshort"),
+    (HONGGUO_HOSTS, "hongguo"),
+    (IDRAMA_HOSTS, "idrama"),
+    (WETV_HOSTS, "wetv"),
+    (IQIYI_HOSTS, "iqiyi"),
+    (DRAMABITE_HOSTS, "dramabite"),
+    (VIGLOO_HOSTS, "vigloo"),
+    (KISSKH_HOSTS, "kisskh"),
+    (FLEXTV_HOSTS, "flextv"),
+    (MELOLO_HOSTS, "melolo"),
+    (KOLABKHMER_HOSTS, "kolabkhmer"),
+)
+
+
 def detect_platform(url):
-    """Return a named site, generic for other http hosts, or unknown."""
+    """Return a named site, scraped for direct media links, generic for other http hosts, or unknown."""
     if is_tiktok_user_feed(url):
         return "tiktok"
     if is_douyin_user_feed(url):
@@ -151,36 +309,17 @@ def detect_platform(url):
         host = _host(url)
     except ValueError:
         return "unknown"
-    if _matches_host(host, FACEBOOK_HOSTS):
-        return "facebook"
-    if _matches_host(host, INSTAGRAM_HOSTS):
-        return "instagram"
+    if not host:
+        return "unknown"
     if _matches_host(host, TIKTOK_HOSTS) or host.startswith("vm.tiktok.") or host.startswith("vt.tiktok."):
         return "tiktok"
-    if _matches_host(host, YOUTUBE_HOSTS):
-        return "youtube"
-    if _matches_host(host, TWITTER_HOSTS):
-        return "twitter"
-    if _matches_host(host, BILIBILI_HOSTS):
-        return "bilibili"
-    if _matches_host(host, DOUYIN_HOSTS):
-        return "douyin"
     if _matches_host(host, KUAISHOU_HOSTS) or host.startswith("v.kuaishou."):
         return "kuaishou"
-    if _matches_host(host, PINTEREST_HOSTS):
-        return "pinterest"
-    if _matches_host(host, THREADS_HOSTS):
-        return "threads"
-    if _matches_host(host, REDDIT_HOSTS):
-        return "reddit"
-    if _matches_host(host, SNAPCHAT_HOSTS):
-        return "snapchat"
-    if _matches_host(host, XIAOHONGSHU_HOSTS):
-        return "xiaohongshu"
-    if _matches_host(host, WEIBO_HOSTS):
-        return "weibo"
-    if _matches_host(host, TWITCH_HOSTS):
-        return "twitch"
+    for suffixes, platform in _HOST_DETECTION_TABLE:
+        if _matches_host(host, suffixes):
+            return platform
+    if is_scraped_media_url(url):
+        return "scraped"
     if "." in host:
         return "generic"
     return "unknown"
@@ -189,13 +328,17 @@ def detect_platform(url):
 def is_supported_source(url):
     """True when CamDot should extract or download this URL.
 
-    Named hosts (Facebook, YouTube, …) are processed. Random HTTPS hosts
-    (`generic`) and non-URLs (`unknown`) are not queued.
+    Named hosts (Facebook, YouTube, DramaBox, …) and direct scraped media links
+    are processed. Random non-media HTTPS hosts (`generic`) and non-URLs
+    (`unknown`) are not queued.
     """
     return detect_platform(url) not in ("unknown", "generic")
 
 
 def _classify_facebook(parts):
+    host = parts.netloc.lower().split(":")[0].removeprefix("www.")
+    if host == "fb.watch" or host.endswith(".fb.watch"):
+        return SINGLE
     segments = _segments(parts.path)
     lowered = [s.lower() for s in segments]
     query = {k.lower(): v for k, v in parse_qsl(parts.query)}
@@ -209,7 +352,7 @@ def _classify_facebook(parts):
             return SINGLE
     if lowered and lowered[0] == "watch" and query.get("v"):
         return SINGLE
-    if lowered and lowered[0] in ("posts", "permalink.php", "photo.php", "share"):
+    if lowered and lowered[0] in ("posts", "permalink.php", "photo.php", "photo", "share", "story.php"):
         return SINGLE
     if "groups" in lowered:
         return FEED
@@ -318,7 +461,7 @@ def _bilibili_play_segments(url):
     """Path segments after optional lang code for bilibili play/bangumi URLs."""
     if not clean_url(url):
         return []
-    if detect_platform(url) != "bilibili":
+    if detect_platform(url) not in ("bilibili", "bilitv"):
         return []
     parts = urlparse(_with_scheme(url))
     segments = [s for s in _segments(parts.path)]
@@ -346,15 +489,110 @@ def bilibili_play_ids(url):
 
 
 def is_bilibili_season_url(url):
-    """True for bilibili.tv ``/play/{season}`` (whole series, not one episode)."""
+    """True for bilibili.tv, wetv.vip, or hongguoduanju.com season/series URLs (not one episode)."""
     season, episode = bilibili_play_ids(url)
-    return bool(season) and not episode
+    if season and not episode:
+        return True
+    w_series, w_ep = wetv_play_ids(url)
+    if w_series and not w_ep:
+        return True
+    h_series, h_ep = hongguo_play_ids(url)
+    if h_series and not h_ep:
+        return True
+    d_book, d_chap = dramabox_play_ids(url)
+    if d_book and not d_chap:
+        return True
+    g_book, g_chap = goodshort_play_ids(url)
+    if g_book and not g_chap:
+        return True
+    return False
 
 
 def is_bilibili_episode_url(url):
     """True for bilibili.tv ``/play/{season}/{episode}``."""
     season, episode = bilibili_play_ids(url)
     return bool(season and episode)
+
+
+def wetv_play_ids(url):
+    """Return ``(series_id, episode_id_or_empty)`` for wetv.vip ``/play/`` URLs."""
+    if not clean_url(url) or detect_platform(url) != "wetv":
+        return "", ""
+    parts = urlparse(_with_scheme(url))
+    segments = [s for s in _segments(parts.path)]
+    if "play" not in [s.lower() for s in segments]:
+        return "", ""
+    idx = [s.lower() for s in segments].index("play")
+    tail = segments[idx + 1:]
+    if not tail:
+        return "", ""
+    series_id = tail[0].split("-", 1)[0].strip()
+    episode_id = tail[1].split("-", 1)[0].strip() if len(tail) >= 2 else ""
+    return series_id, episode_id
+
+
+def hongguo_play_ids(url):
+    """Return ``(series_id, episode_id_or_empty)`` for hongguoduanju.com URLs."""
+    if not clean_url(url) or detect_platform(url) != "hongguo":
+        return "", ""
+    parts = urlparse(_with_scheme(url))
+    query = parse_qs(parts.query)
+    segments = [s for s in _segments(parts.path)]
+    if segments and segments[0].lower() == "detail":
+        series_id = (query.get("series_id") or [""])[0].strip()
+        return series_id, ""
+    if segments and segments[0].lower() == "player" and len(segments) >= 2:
+        series_id = segments[1].strip()
+        episode_id = segments[2].strip() if len(segments) >= 3 else ""
+        return series_id, episode_id
+    return "", ""
+
+
+def dramabox_play_ids(url):
+    """Return ``(book_id, chapter_id_or_empty)`` for dramaboxdb.com URLs."""
+    if not clean_url(url) or detect_platform(url) != "dramabox":
+        return "", ""
+    parts = urlparse(_with_scheme(url))
+    segments = [s for s in _segments(parts.path)]
+    if len(segments) >= 2 and segments[0].lower() in ("movie", "drama", "book"):
+        book_id = segments[1].split("_", 1)[0].split("-", 1)[0].strip()
+        return book_id, ""
+    if len(segments) >= 3 and segments[0].lower() == "ep":
+        book_id = segments[1].split("_", 1)[0].strip()
+        chapter_id = segments[2].split("_", 1)[0].strip()
+        return book_id, chapter_id
+    return "", ""
+
+
+def goodshort_play_ids(url):
+    """Return ``(book_slug_id, chapter_id_or_empty)`` for goodshort.com URLs."""
+    if not clean_url(url) or detect_platform(url) != "goodshort":
+        return "", ""
+    parts = urlparse(_with_scheme(url))
+    segments = [s for s in _segments(parts.path)]
+    if len(segments) >= 2 and segments[0].lower() in ("drama", "episodes", "book"):
+        return segments[1].strip(), ""
+    if len(segments) >= 3 and segments[0].lower() == "episode":
+        slug = segments[1].strip()
+        chap = segments[2].split("-")[-1].strip()
+        return slug, chap
+    return "", ""
+
+
+def flickreels_play_ids(url):
+    """Return ``(playlet_id, episode_slug_or_empty)`` for flickreels.net URLs."""
+    if not clean_url(url) or detect_platform(url) != "flickreels":
+        return "", ""
+    parts = urlparse(_with_scheme(url))
+    segments = [s for s in _segments(parts.path)]
+    if len(segments) >= 3 and segments[0].lower() == "playlist":
+        playlet_id = segments[2].strip()
+        ep_slug = segments[3].strip() if len(segments) >= 4 else ""
+        return playlet_id, ep_slug
+    if len(segments) >= 2 and segments[0].lower() in ("drama", "episodes-list"):
+        playlet_id = segments[1].split("-")[-1].strip()
+        return playlet_id, ""
+    return "", ""
 
 
 def _classify_bilibili(parts):
@@ -441,14 +679,40 @@ def _classify_twitter(parts):
 
 def _classify_kuaishou(parts):
     host = parts.netloc.lower().split(":")[0]
-    if host.startswith("v.kuaishou."):
+    if host.startswith("v.kuaishou.") or host.startswith("s.kw.ai") or host == "kw.ai" or host == "sck.io":
         return SINGLE
     segments = [s.lower() for s in _segments(parts.path)]
-    if any(name in segments for name in ("short-video", "shortvideo", "photo", "f")):
+    if any(name in segments for name in ("short-video", "shortvideo", "photo", "f", "video", "p")):
         return SINGLE
-    if segments and segments[0] in ("profile", "user"):
+    if segments and (segments[0] in ("profile", "user") or segments[0].startswith("@")):
         return FEED
     return SINGLE
+
+
+def is_pinterest_search_url(url):
+    """True for pinterest.com/search/... with a non-empty ?q= query."""
+    if detect_platform(url) != "pinterest":
+        return False
+    parts = urlparse(_with_scheme(url))
+    segments = [unquote(s).lower() for s in _segments(parts.path)]
+    query = parse_qs(parts.query)
+    q = (query.get("q") or query.get("query") or [""])[0].strip()
+    return bool(segments and segments[0] == "search" and q)
+
+
+def is_pinterest_related_url(url):
+    """True for pinterest.com/pin/<id>/related (or ?related=1)."""
+    if detect_platform(url) != "pinterest":
+        return False
+    parts = urlparse(_with_scheme(url))
+    segments = [unquote(s).lower() for s in _segments(parts.path)]
+    query = parse_qs(parts.query)
+    if segments and segments[0] == "pin" and len(segments) >= 2:
+        if len(segments) >= 3 and segments[2] in PINTEREST_RELATED_TAILS:
+            return True
+        if (query.get("related") or [""])[0].strip().lower() in ("1", "true", "yes"):
+            return True
+    return False
 
 
 def _classify_pinterest(parts):
@@ -456,9 +720,98 @@ def _classify_pinterest(parts):
     if host == "pin.it" or host.endswith(".pin.it"):
         return SINGLE
     segments = [unquote(s).lower() for s in _segments(parts.path)]
+    query = parse_qs(parts.query)
+    if segments and segments[0] == "search":
+        q = (query.get("q") or query.get("query") or [""])[0].strip()
+        return FEED if q else SINGLE
+    if segments and segments[0] == "pin" and len(segments) >= 2:
+        if len(segments) >= 3 and segments[2] in PINTEREST_RELATED_TAILS:
+            return FEED
+        if (query.get("related") or [""])[0].strip().lower() in ("1", "true", "yes"):
+            return FEED
+        return SINGLE
     if not segments or segments[0] in PINTEREST_RESERVED:
         return SINGLE
     return FEED
+
+
+def _classify_suno(parts):
+    segments = [s.lower() for s in _segments(parts.path)]
+    if segments and (segments[0] == "playlist" or segments[0].startswith("@")):
+        return FEED
+    return SINGLE
+
+
+def _classify_dailymotion(parts):
+    host = parts.netloc.lower().split(":")[0].removeprefix("www.")
+    if host == "dai.ly" or host.endswith(".dai.ly"):
+        return SINGLE
+    segments = [s.lower() for s in _segments(parts.path)]
+    if segments and segments[0] in ("video", "embed"):
+        return SINGLE
+    if segments and segments[0] == "playlist":
+        return FEED
+    return SINGLE
+
+
+def _classify_threads(parts):
+    segments = [s.lower() for s in _segments(parts.path)]
+    if "post" in segments or "t" in segments:
+        return SINGLE
+    if segments and segments[0].startswith("@") and len(segments) == 1:
+        return FEED
+    return SINGLE
+
+
+def _classify_xiaohongshu(parts):
+    host = parts.netloc.lower().split(":")[0].removeprefix("www.")
+    if host == "xhslink.com" or host.endswith(".xhslink.com"):
+        return SINGLE
+    segments = [s.lower() for s in _segments(parts.path)]
+    if "profile" in segments and "explore" not in segments and "discovery" not in segments:
+        return FEED
+    return SINGLE
+
+
+_DRAMA_EPISODE_SEGMENTS = frozenset({
+    "episode", "episodes", "ep", "chapter", "watch", "player", "video",
+})
+_DRAMA_SERIES_SEGMENTS = frozenset({
+    "drama", "movie", "series", "book", "detail", "album", "show", "title", "tv", "program",
+})
+_DRAMA_EP_SLUG_RE = re.compile(r"(?:^|[-_/])(?:ep|episode|chapter)[-_]?\d+", re.I)
+
+
+def _classify_movie_drama(parts):
+    host = parts.netloc.lower().split(":")[0].removeprefix("www.")
+    segments = [s.lower() for s in _segments(parts.path)]
+    query = {k.lower(): v for k, v in parse_qsl(parts.query)}
+    if host == "wetv.vip" or host.endswith(".wetv.vip"):
+        if "play" in segments:
+            idx = segments.index("play")
+            tail = segments[idx + 1:]
+            return FEED if len(tail) == 1 else SINGLE
+    if host == "hongguoduanju.com" or host.endswith(".hongguoduanju.com"):
+        if segments and segments[0] == "detail" and query.get("series_id"):
+            return FEED
+        if segments and segments[0] == "player":
+            return FEED if len(segments) == 2 else SINGLE
+    if host == "goodshort.com" or host.endswith(".goodshort.com"):
+        if segments and segments[0] in ("drama", "episodes"):
+            return FEED
+        if segments and segments[0] == "episode":
+            return SINGLE
+    if any(k in query for k in ("ep", "episode", "chapter", "episode_id", "chapter_id", "vid")):
+        return SINGLE
+    if _DRAMA_EP_SLUG_RE.search(parts.path or ""):
+        return SINGLE
+    if any(seg in _DRAMA_EPISODE_SEGMENTS for seg in segments):
+        return SINGLE
+    if "play" in segments:
+        return SINGLE
+    if any(seg in _DRAMA_SERIES_SEGMENTS for seg in segments):
+        return FEED
+    return SINGLE
 
 
 def classify_source(url):
@@ -480,14 +833,24 @@ def classify_source(url):
         return _classify_youtube(parts)
     if platform == "twitter":
         return _classify_twitter(parts)
-    if platform == "bilibili":
+    if platform in ("bilibili", "bilitv"):
         return _classify_bilibili(parts)
     if platform == "douyin":
         return _classify_douyin(parts)
-    if platform == "kuaishou":
+    if platform in ("kuaishou", "kwai", "snackvideo"):
         return _classify_kuaishou(parts)
     if platform == "pinterest":
         return _classify_pinterest(parts)
+    if platform == "suno":
+        return _classify_suno(parts)
+    if platform == "dailymotion":
+        return _classify_dailymotion(parts)
+    if platform == "threads":
+        return _classify_threads(parts)
+    if platform == "xiaohongshu":
+        return _classify_xiaohongshu(parts)
+    if platform in MOVIE_DRAMA_PLATFORMS:
+        return _classify_movie_drama(parts)
     return SINGLE
 
 
@@ -578,7 +941,7 @@ def normalize_source_url(url):
     platform = detect_platform(url)
     if platform in ("unknown", "generic"):
         raise ValueError(
-            "Unsupported site. Paste a video, reel, board, or page URL."
+            "Unsupported site. Paste a video, reel, board, drama, or media URL."
         )
     if platform == "facebook":
         url = normalize_channel_url(url)
@@ -586,7 +949,7 @@ def normalize_source_url(url):
         url = _rewrite_youtube_channel(url)
     elif platform == "instagram":
         url = _drop_instagram_tracking(url)
-    elif platform == "bilibili":
+    elif platform in ("bilibili", "bilitv"):
         url = _drop_bilibili_tracking(url)
     elif platform == "douyin":
         url = _rewrite_douyin_url(url)
@@ -599,7 +962,7 @@ def normalize_source_url(url):
 
 
 def normalize_channel_url(url):
-    """Return a URL pointing at the channel's reels tab.
+    """Return a URL pointing at the channel's reels tab (or preserve single posts/photos).
 
     Repairs the two things that go wrong in practice: stray quotes from shell
     escaping, and a profile URL whose "&sk=reels_tab" was eaten by the shell.
@@ -610,13 +973,19 @@ def normalize_channel_url(url):
     host = parts.netloc.lower().split(":")[0]
     if not any(host == h or host.endswith("." + h) for h in FACEBOOK_HOSTS):
         raise ValueError(f"Not a Facebook URL: {url}")
+    if host == "fb.watch" or host.endswith(".fb.watch"):
+        return urlunparse(parts)
 
     path, query = parts.path, parts.query
     segments = [s for s in path.split("/") if s]
     lowered = {s.lower() for s in segments}
 
-    # Already a reels URL, or the user picked a tab on purpose - leave it alone.
-    if lowered & REELS_SEGMENTS or "sk" in {k.lower() for k, _ in parse_qsl(query)}:
+    # Already a reels URL, a single photo/post/watch URL, or the user picked a tab on purpose.
+    if (
+        lowered & REELS_SEGMENTS
+        or lowered & FACEBOOK_SINGLE_ROOTS
+        or "sk" in {k.lower() for k, _ in parse_qsl(query)}
+    ):
         return urlunparse(parts)
 
     if segments and segments[0].lower() in ("profile.php", "people"):

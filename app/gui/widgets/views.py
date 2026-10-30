@@ -41,7 +41,10 @@ class _FaviconTask(QRunnable):
         path = platform_icons.fetch_favicon(self.host, self.dest_dir) or ""
         bridge = self._bridge()
         if bridge is not None:
-            bridge.ready.emit(self.host, path)
+            try:
+                bridge.ready.emit(self.host, path)
+            except RuntimeError:
+                pass
 
 
 class _FaviconBridge(QObject):
@@ -173,6 +176,13 @@ class ViewsPanel(QFrame):
 
     def set_counts(self, hosts, kinds):
         """`hosts` and `kinds` are name -> count maps from the active table."""
+        snapshot = (
+            tuple(sorted((str(k), int(v)) for k, v in (hosts or {}).items())),
+            tuple((key, int((kinds or {}).get(key, 0))) for key, _label in MEDIA_KINDS),
+        )
+        if snapshot == getattr(self, "_last_counts_snapshot", None):
+            return
+        self._last_counts_snapshot = snapshot
         for key, label in MEDIA_KINDS:
             self._kind_boxes[key].setText(f"{label} ({int(kinds.get(key, 0))})")
         self.host_list.blockSignals(True)
