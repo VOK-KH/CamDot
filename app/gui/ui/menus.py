@@ -58,7 +58,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from app.core import icons, store, sysinfo, telegram_notify, theme
+from app.core import icons, speedtest, store, sysinfo, telegram_notify, theme
 from app.core.collect import (
     cookies_from_browser_value,
     list_bilibili_season_entries,
@@ -498,6 +498,7 @@ class WindowMenusMixin:
             ("cpu", "cpu", sysinfo.cpu_label(), "100%"),
             ("ram", "ram", "Memory in use on this machine", "888.8 GB / 888.8 GB"),
             ("disk", "disk", "Free space on the download drive", "888.8 GB free on C:"),
+            ("line", "globe", "Line speed from Speedtest.net. Tools → Speed test.", "888 Mbps · 888 ms"),
         ):
             bar.addWidget(self._stat(key, name, tooltip, sample))
         # Permanent widgets sit on the right, away from the machine readings.
@@ -545,6 +546,8 @@ class WindowMenusMixin:
         _win_mod().threading.Thread(target=self._detect_gpu, daemon=True).start()
         self._refresh_stats()
         self._sync_stats_timer()
+        if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+            self._start_speedtest()
 
     def _sync_stats_timer(self):
         """Poll only while a panel is showing the readings."""
@@ -559,6 +562,51 @@ class WindowMenusMixin:
     @Slot(str, str)
     def _on_gpu_detected(self, label, tooltip):
         self._set_stat("gpu", label, tooltip)
+
+    def _start_speedtest(self, *_args):
+        """Sample download speed from the nearest Speedtest.net server."""
+        if getattr(self, "_speedtest_busy", False):
+            return
+        self._speedtest_busy = True
+        if hasattr(self, "act_speedtest"):
+            self.act_speedtest.setEnabled(False)
+        self._set_stat("line", tr("Testing…"), "Measuring download speed on Speedtest.net")
+        _win_mod().threading.Thread(target=self._run_speedtest, daemon=True).start()
+
+    def _run_speedtest(self):
+        try:
+            result = speedtest.run_speedtest()
+        except Exception as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            result = {"error": detail}
+        self.speedtest_ready.emit(result)
+
+    @Slot(object)
+    def _on_speedtest_ready(self, result):
+        self._speedtest_busy = False
+        if hasattr(self, "act_speedtest"):
+            self.act_speedtest.setEnabled(True)
+        if not isinstance(result, dict) or result.get("error"):
+            detail = ""
+            if isinstance(result, dict):
+                detail = result.get("error") or ""
+            self._set_stat("line", "—", detail or "Speed test failed")
+            if detail:
+                self._append_log(f"Speed test failed: {detail}")
+            self._refresh_overview()
+            return
+        label = speedtest.format_line(result)
+        place = ", ".join(
+            part for part in (result.get("name") or "", result.get("country") or "") if part
+        )
+        sponsor = result.get("server") or "Speedtest.net"
+        isp = result.get("isp") or ""
+        tip = f"Speedtest.net\n{sponsor}" + (f" · {place}" if place else "")
+        if isp:
+            tip += f"\n{isp}"
+        self._set_stat("line", label, tip)
+        self._append_log(f"Line speed {label} via {sponsor}" + (f" ({place})" if place else ""))
+        self._refresh_overview()
 
     @Slot()
     def _refresh_stats(self):
@@ -739,6 +787,8 @@ class WindowMenusMixin:
             checkable=True)
         self._action(
             tools_menu, "Show grabber &monitor", self._show_grab_monitor, None, "activity")
+        self.act_speedtest = self._action(
+            tools_menu, "Speed &test", self._start_speedtest, None, "globe")
         tools_menu.addSeparator()
         self._action(tools_menu, "Check for tool &updates", self._check_tool_updates)
         self._action(tools_menu, "Check for app &updates", self._check_app_updates)

@@ -1,6 +1,6 @@
 [project]
 name = "camdot"
-version = "0.3.6"
+version = "0.3.7"
 description = "CamDot — download posts from Facebook, Instagram, TikTok, YouTube, and X."
 readme = "README.md"
 requires-python = ">=3.10"

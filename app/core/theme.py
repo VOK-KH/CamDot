@@ -147,6 +147,10 @@ QTreeView {
     selection-background-color: __ACCENT_WASH__;
     selection-color: #1c1e21;
 }
+QTreeView::branch:!has-children {
+    image: none;
+    border-image: none;
+}
 QTreeView::item:selected, QTableView::item:selected {
     background-color: __ACCENT_WASH__;
     color: #1c1e21;
@@ -368,6 +372,10 @@ QTableView {
 QTreeView {
     selection-background-color: __ACCENT_WASH__;
     selection-color: #dbe3ec;
+}
+QTreeView::branch:!has-children {
+    image: none;
+    border-image: none;
 }
 QTreeView::item:selected, QTableView::item:selected {
     background-color: __ACCENT_WASH__;

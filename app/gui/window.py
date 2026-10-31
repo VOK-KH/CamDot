@@ -195,6 +195,7 @@ class MainWindow(
 ):
     tools_checked = Signal(str)
     gpu_detected = Signal(str, str)
+    speedtest_ready = Signal(object)
     app_update_found = Signal(object)
     app_update_uptodate = Signal()
     notify_poll_done = Signal(object)
@@ -207,6 +208,7 @@ class MainWindow(
         self.tools_checked.connect(self._append_log)
         self.open_url.connect(lambda url: QDesktopServices.openUrl(QUrl(url)))
         self.gpu_detected.connect(self._on_gpu_detected)
+        self.speedtest_ready.connect(self._on_speedtest_ready)
         self.app_update_found.connect(self._prompt_app_update)
         self.app_update_uptodate.connect(self._show_app_uptodate)
         self.app_update_downloaded.connect(self._prompt_restart_for_update)
@@ -378,6 +380,10 @@ class MainWindow(
     @Slot(str, str)
     def _on_gpu_detected(self, label, tooltip):
         return WindowMenusMixin._on_gpu_detected(self, label, tooltip)
+
+    @Slot(object)
+    def _on_speedtest_ready(self, result):
+        return WindowMenusMixin._on_speedtest_ready(self, result)
 
     @Slot(object)
     def _prompt_app_update(self, info):

@@ -3,12 +3,13 @@ import csv
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, unquote, urlparse
 
-from app.core.cookies import cookie_header_from_netscape, cookies_from_curl
+from app.core.cookies import cookie_header_from_netscape, cookies_from_curl, readable_browser_cookie_spec
 from app.core.download import (
     _HTTP_UA,
     _pinterest_pin_duration,
@@ -40,12 +41,13 @@ from app.core.urls import (
     is_scraped_media_url,
     is_tiktok_user_feed,
     normalize_source_url,
+    tiktok_drama_ids,
     tiktok_sec_uid,
     tiktok_user_feed,
     tiktok_username,
     wetv_play_ids,
 )
-from app.core.web_media import extract_web_feed, extract_web_media, fetch_text
+from app.core.web_media import extract_web_feed, extract_web_media, fetch_text, fill_instagram_captions
 
 TIKTOK_PROFILE_HELP = (
     "TikTok blocked listing @{name}. Collect one video from that creator first "
@@ -199,6 +201,335 @@ def _parse_tiktok_sec_uid_from_html(html, username=""):
     return ""
 
 
+def _tiktok_user_info(html):
+    """``userInfo`` from a TikTok profile's rehydration JSON."""
+    if not html:
+        return {}
+    marker = _TIKTOK_UNIVERSAL_JSON
+    start = html.find(marker)
+    if start < 0:
+        return {}
+    start += len(marker)
+    end = html.find("</script>", start)
+    if end <= start:
+        return {}
+    try:
+        data = json.loads(html[start:end])
+    except json.JSONDecodeError:
+        return {}
+    scope = data.get("__DEFAULT_SCOPE__") if isinstance(data, dict) else None
+    detail = scope.get("webapp.user-detail") if isinstance(scope, dict) else None
+    info = detail.get("userInfo") if isinstance(detail, dict) else None
+    return info if isinstance(info, dict) else {}
+
+
+def _tiktok_video_count(info):
+    for stats in (info.get("stats"), info.get("statsV2")):
+        if not isinstance(stats, dict) or stats.get("videoCount") in (None, ""):
+            continue
+        try:
+            return int(stats["videoCount"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _fetch_tiktok_profile_html(username, timeout=20):
+    """Profile HTML. Desktop Chrome is challenged; the mobile fingerprint is not."""
+    name = (username or "").lstrip("@").strip()
+    if not name:
+        return ""
+    try:
+        from curl_cffi import requests as curl_requests
+        response = curl_requests.get(
+            f"https://www.tiktok.com/@{name}",
+            impersonate="chrome131_android",
+            headers={"Accept-Language": "en-US,en;q=0.9"},
+            timeout=timeout,
+        )
+    except Exception:
+        return ""
+    text = response.text or ""
+    if response.status_code >= 400 or "UNIVERSAL_DATA" not in text:
+        return ""
+    return text
+
+
+def _tiktok_profile_entries(html, username):
+    """Video rows from a profile page, or None when the page has no user record.
+
+    Raises ValueError when TikTok loaded the profile and it has no public videos.
+    """
+    info = _tiktok_user_info(html)
+    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    if not user:
+        return None
+    name = (user.get("uniqueId") or username or "").lstrip("@")
+    nickname = collapse_text(user.get("nickname") or name)
+    series_url = f"https://www.tiktok.com/@{name}" if name else ""
+    items = info.get("itemList") if isinstance(info.get("itemList"), list) else []
+    entries = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        video_id = str(item.get("id") or "").strip()
+        if not video_id.isdigit():
+            continue
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        handle = (author.get("uniqueId") or name or "user").lstrip("@")
+        title = collapse_text(item.get("desc") or item.get("title") or "")
+        video = item.get("video") if isinstance(item.get("video"), dict) else {}
+        duration = None
+        if video.get("duration") not in (None, ""):
+            try:
+                duration = float(video["duration"])
+            except (TypeError, ValueError):
+                duration = None
+        entries.append(entry_from_url(
+            f"https://www.tiktok.com/@{handle}/video/{video_id}",
+            id=video_id,
+            title=title or video_id,
+            description=title,
+            uploader=collapse_text(author.get("nickname") or nickname or handle),
+            duration=duration,
+            platform="tiktok",
+            series=nickname or handle,
+            series_url=series_url,
+        ))
+    if entries:
+        return entries
+    count = _tiktok_video_count(info)
+    if count == 0:
+        label = f"{nickname} (@{name})" if nickname and nickname != name else f"@{name}"
+        raise ValueError(
+            f"{label} has no public videos to extract. "
+            "Short dramas come from an episode link on the Short dramas tab."
+        )
+    return None
+
+
+def _collect_tiktok_profile(url, *, log, should_stop, on_entries=None, cache_path=None):
+    """List a TikTok profile from the page itself when yt-dlp cannot."""
+    name = tiktok_username(url)
+    if not name:
+        return None
+    check_stop(should_stop)
+    html = _fetch_tiktok_profile_html(name)
+    if not html:
+        return None
+    sec_uid = _parse_tiktok_sec_uid_from_html(html, name)
+    if sec_uid:
+        remember_tiktok_user(name, sec_uid, cache_path)
+    try:
+        entries = _tiktok_profile_entries(html, name)
+    except ValueError:
+        raise
+    if not entries:
+        return None
+    log(f"Listing @{name} from the profile page.")
+    _push_entries(on_entries, entries)
+    return entries
+
+
+def _tiktok_api_json(session, path, query, timeout=20):
+    response = session.get(
+        "https://www.tiktok.com" + path,
+        params=query,
+        impersonate="chrome131_android",
+        headers={
+            "Accept": "application/json",
+            "Referer": "https://www.tiktok.com/shortdrama",
+        },
+        timeout=timeout,
+    )
+    if response.status_code >= 400 or not (response.text or "").startswith("{"):
+        return {}
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _tiktok_drama_session():
+    from curl_cffi import requests as curl_requests
+    session = curl_requests.Session()
+    session.get(
+        "https://www.tiktok.com/",
+        impersonate="chrome131_android",
+        timeout=20,
+    )
+    return session
+
+
+def _episode_number(item, fallback):
+    info = item.get("dramaInfo") if isinstance(item.get("dramaInfo"), dict) else {}
+    video = info.get("DramaVideoData") if isinstance(info.get("DramaVideoData"), dict) else {}
+    raw = video.get("EpisodeNumber")
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        number = fallback
+    return number if number > 0 else fallback
+
+
+def _collect_tiktok_drama(url, *, log, should_stop, on_entries=None):
+    """List every episode of one TikTok short drama."""
+    drama_id, _episode = tiktok_drama_ids(url)
+    if not drama_id:
+        return None
+    check_stop(should_stop)
+    try:
+        session = _tiktok_drama_session()
+    except Exception:
+        return None
+    detail = _tiktok_api_json(
+        session, "/api/drama/detail/",
+        {"aid": "1988", "dramaID": drama_id, "language": "en"},
+    )
+    info = detail.get("dramaInfo") if isinstance(detail.get("dramaInfo"), dict) else {}
+    drama_name = collapse_text(info.get("dramaName") or drama_id)
+    author = info.get("author") if isinstance(info.get("author"), dict) else {}
+    user = author.get("user") if isinstance(author.get("user"), dict) else {}
+    uploader = collapse_text(user.get("nickname") or user.get("uniqueId") or "")
+    description = collapse_text(info.get("description") or "")
+    series_url = f"https://www.tiktok.com/shortdrama/episode/{drama_id}"
+    try:
+        total = int(info.get("numVideos") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    log(f"Listing {drama_name}" + (f" ({total} EP)" if total else "") + "…")
+
+    entries = []
+    seen = set()
+    cursor = "0"
+    for _page in range(80):
+        check_stop(should_stop)
+        payload = _tiktok_api_json(
+            session,
+            "/api/drama/episode/item_list/",
+            {
+                "aid": "1988",
+                "dramaID": drama_id,
+                "count": "24",
+                "cursor": cursor,
+                "language": "en",
+            },
+        )
+        items = payload.get("itemList") if isinstance(payload.get("itemList"), list) else []
+        added = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            video_id = str(item.get("id") or "").strip()
+            if not video_id.isdigit() or video_id in seen:
+                continue
+            seen.add(video_id)
+            added += 1
+            number = _episode_number(item, len(entries) + 1)
+            video = item.get("video") if isinstance(item.get("video"), dict) else {}
+            duration = None
+            if video.get("duration") not in (None, ""):
+                try:
+                    duration = float(video["duration"])
+                except (TypeError, ValueError):
+                    duration = None
+            caption = collapse_text(item.get("desc") or f"Episode {number}")
+            title = f"{drama_name} E{number}" if drama_name else caption
+            author = item.get("author") if isinstance(item.get("author"), dict) else {}
+            handle = (author.get("uniqueId") or user.get("uniqueId") or "user").lstrip("@")
+            watch_url = f"https://www.tiktok.com/@{handle}/video/{video_id}"
+            _drama_watch_urls.setdefault(drama_id, {})[str(number)] = watch_url
+            entries.append(entry_from_url(
+                watch_url,
+                id=video_id,
+                title=title,
+                description=description or caption,
+                uploader=uploader,
+                duration=duration,
+                platform="tiktok",
+                series=drama_name,
+                series_url=series_url,
+            ))
+        if not items or added == 0 or not payload.get("hasMore"):
+            break
+        next_cursor = str(payload.get("cursor") or "")
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    if not entries:
+        return None
+    entries.sort(key=lambda row: _episode_sort_key(row.get("title") or ""))
+    _push_entries(on_entries, entries)
+    return entries
+
+
+_drama_watch_urls = {}
+_drama_watch_lock = threading.Lock()
+
+
+def _index_tiktok_drama(drama_id):
+    """Map episode number to the TikTok video URL yt-dlp can download."""
+    found = {}
+    try:
+        session = _tiktok_drama_session()
+    except Exception:
+        return found
+    cursor = "0"
+    for _page in range(80):
+        payload = _tiktok_api_json(
+            session,
+            "/api/drama/episode/item_list/",
+            {
+                "aid": "1988",
+                "dramaID": drama_id,
+                "count": "24",
+                "cursor": cursor,
+                "language": "en",
+            },
+        )
+        items = payload.get("itemList") if isinstance(payload.get("itemList"), list) else []
+        if not items:
+            break
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            video_id = str(item.get("id") or "").strip()
+            if not video_id.isdigit():
+                continue
+            number = _episode_number(item, 0)
+            if number <= 0:
+                continue
+            author = item.get("author") if isinstance(item.get("author"), dict) else {}
+            handle = str(author.get("uniqueId") or "user").lstrip("@")
+            found[str(number)] = f"https://www.tiktok.com/@{handle}/video/{video_id}"
+        if not payload.get("hasMore"):
+            break
+        next_cursor = str(payload.get("cursor") or "")
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    return found
+
+
+def tiktok_drama_watch_url(url):
+    """Video page for a short-drama episode link already stored in the queue."""
+    drama_id, episode = tiktok_drama_ids(url)
+    if not drama_id or not episode:
+        return ""
+    with _drama_watch_lock:
+        cached = _drama_watch_urls.get(drama_id)
+        if cached is None:
+            cached = _index_tiktok_drama(drama_id)
+            _drama_watch_urls[drama_id] = cached
+        return cached.get(str(int(episode)), "")
+
+
+def _episode_sort_key(title):
+    match = re.search(r"\bE(\d+)\s*$", title or "", re.I)
+    return int(match.group(1)) if match else 0
+
+
 def resolve_tiktok_sec_uid(username, *, cookie_header="", timeout=20):
     """Fetch a profile page and read the creator sec_uid when yt-dlp cannot."""
     name = (username or "").lstrip("@").strip()
@@ -268,7 +599,7 @@ def _ydl_opts(cookies_browser="", quiet=True, cookies_file="", dateafter=""):
         "noplaylist": False,
         "extract_flat": False,
     }
-    spec = cookies_browser or ""
+    spec = readable_browser_cookie_spec(cookies_browser or "")
     if spec:
         browser, _, profile = spec.partition(":")
         opts["cookiesfrombrowser"] = (browser, profile or None, None, None)
@@ -919,8 +1250,9 @@ def collect_entries(
     each batch as soon as it is known so the GUI can sync the Grabber table.
 
     Facebook and Instagram feeds keep strategy ``selenium`` (Chrome may still
-    open) but try yt-dlp first and only fall back to scrape_reel_urls when
-    listing fails. Instagram /reposts is not listed by yt-dlp.
+    open). Instagram profiles list from the public page first (yt-dlp's user
+    extractor is broken); Chrome is only used when that listing is empty.
+    Instagram /reposts is not listed automatically.
     """
     output_root = output_root or default_output_root()
     url = normalize_source_url(url)
@@ -934,7 +1266,44 @@ def collect_entries(
         ytdlp_feed = True if feed is None else feed
         list_url = instagram_ytdlp_list_url(url) if platform == "instagram" else url
         entries = None
-        if list_url is None:
+        public_entries = []
+        if platform == "instagram" and ydl_cls is None and list_url is not None:
+            try:
+                raw_feed = extract_web_feed(url) or []
+            except Exception as exc:
+                detail = str(exc).strip()
+                log(
+                    "Instagram page listing failed; trying the next extractor."
+                    + (f" ({detail})" if detail else "")
+                )
+                raw_feed = []
+            entries = [
+                entry_from_url(
+                    item["url"],
+                    **{k: v for k, v in item.items() if k != "url"},
+                )
+                for item in raw_feed
+                if item.get("url")
+            ]
+            reels_tab = "/reels/" in url.lower()
+            if entries and not reels_tab:
+                csv_path = collect_csv_path(channel)
+                write_entries_csv(csv_path, entries)
+                log(f"Collected {len(entries)} Instagram post(s); skipped Chrome.")
+                _push_entries(on_entries, entries)
+                return csv_path, entries
+            if entries and reels_tab:
+                log(
+                    f"Public page listed {len(entries)} reel(s). "
+                    "Opening Chrome to load the rest of the Reels tab."
+                )
+                _push_entries(on_entries, entries)
+        public_entries = list(entries or []) if (
+            entries and platform == "instagram" and "/reels/" in url.lower()
+        ) else []
+        if public_entries:
+            pass
+        elif list_url is None:
             log(f"Cannot list that {site} tab automatically; opening Chrome.")
         else:
             try:
@@ -967,18 +1336,25 @@ def collect_entries(
                 log(f"No {site} items found automatically; opening Chrome.")
 
         streamed = []
+        known_urls = {item.get("url") for item in public_entries if item.get("url")}
 
         def push_urls(items):
             batch = []
             for item in items:
                 if isinstance(item, str):
-                    batch.append(entry_from_url(item))
+                    row = entry_from_url(item)
                 else:
-                    batch.append(entry_from_url(
+                    row = entry_from_url(
                         item.get("url"),
                         title=item.get("title"),
                         description=item.get("description") or item.get("title"),
-                    ))
+                    )
+                if not row.get("url") or row["url"] in known_urls:
+                    continue
+                if public_entries and "/reel/" not in row["url"]:
+                    continue
+                known_urls.add(row["url"])
+                batch.append(row)
             streamed.extend(batch)
             _push_entries(on_entries, batch)
 
@@ -995,6 +1371,25 @@ def collect_entries(
         entries = _unique_entries(streamed) or [
             entry_from_url(item) for item in read_urls(csv_path)
         ]
+        if public_entries:
+            extra = [item for item in entries if "/reel/" in (item.get("url") or "")]
+            merged = list(public_entries)
+            seen = {item.get("url") for item in merged}
+            for item in extra:
+                if item.get("url") not in seen:
+                    seen.add(item["url"])
+                    merged.append(item)
+            entries = merged
+            log(f"Collected {len(entries)} Instagram reel(s).")
+        if platform == "instagram" and entries:
+            before = {item.get("url"): item.get("title") for item in entries}
+            fill_instagram_captions(entries)
+            updated = [
+                item for item in entries
+                if (item.get("title") or "") and item.get("title") != before.get(item.get("url"))
+            ]
+            if updated:
+                _push_entries(on_entries, updated)
         entries = _enrich_facebook_captions(
             entries, log=log, should_stop=should_stop,
             cookies_browser=cookies_browser, cookies_file=cookies_file,
@@ -1066,6 +1461,34 @@ def collect_entries(
             log(f"Collected {len(entries)} item(s).")
             return csv_path, entries
         raise ValueError(f"No episodes or media found at {url}")
+
+    if platform == "tiktok" and ydl_cls is None and tiktok_drama_ids(url)[0]:
+        try:
+            entries = _collect_tiktok_drama(
+                url, log=log, should_stop=should_stop, on_entries=on_entries,
+            )
+        except StopRequested:
+            raise
+        if not entries:
+            raise ValueError("No episodes found for that TikTok short drama.")
+        csv_path = collect_csv_path(channel)
+        write_entries_csv(csv_path, entries)
+        log(f"Collected {len(entries)} episode(s).")
+        return csv_path, entries
+
+    if platform == "tiktok" and kind == FEED and ydl_cls is None:
+        try:
+            entries = _collect_tiktok_profile(
+                url, log=log, should_stop=should_stop,
+                on_entries=on_entries, cache_path=cache_path,
+            )
+        except StopRequested:
+            raise
+        if entries:
+            csv_path = collect_csv_path(channel)
+            write_entries_csv(csv_path, entries)
+            log(f"Collected {len(entries)} item(s).")
+            return csv_path, entries
 
     if platform == "pinterest" and kind == FEED:
         try:

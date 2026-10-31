@@ -1,10 +1,12 @@
 """Tests for cURL / cookie header parsing."""
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 
 from app.core.cookies import (
+    readable_browser_cookie_spec,
     cookie_domain_from_curl,
     cookie_domains_from_curl,
     cookies_from_curl,
@@ -146,6 +148,40 @@ class CookiesFromCurl(unittest.TestCase):
                 body = handle.read()
             self.assertIn("msToken\tfrom-json", body)
             self.assertNotIn("stale", body)
+
+
+class ReadableBrowserCookies(unittest.TestCase):
+    def test_snapshot_is_readable_while_the_database_stays_open(self):
+        with tempfile.TemporaryDirectory() as folder:
+            browser = os.path.join(folder, "User Data")
+            profile = os.path.join(browser, "Default", "Network")
+            os.makedirs(profile)
+            src = os.path.join(profile, "Cookies")
+            connection = sqlite3.connect(src)
+            connection.execute("CREATE TABLE cookies (host_key TEXT)")
+            connection.execute("INSERT INTO cookies VALUES ('example.test')")
+            connection.commit()
+            connection.execute("BEGIN EXCLUSIVE")
+            with open(os.path.join(browser, "Local State"), "w", encoding="utf-8") as handle:
+                handle.write('{"os_crypt": {}}')
+            dest = os.path.join(folder, "snap")
+            spec = readable_browser_cookie_spec(
+                "chrome:Default", browser_dir=browser, dest_root=dest,
+            )
+            connection.close()
+            self.assertTrue(spec.startswith("chrome:"))
+            copied = os.path.join(spec.split(":", 1)[1], "Network", "Cookies")
+            self.assertTrue(os.path.isfile(copied))
+            check = sqlite3.connect(copied)
+            try:
+                row = check.execute("SELECT host_key FROM cookies").fetchone()
+            finally:
+                check.close()
+            self.assertEqual(row[0], "example.test")
+
+    def test_unknown_browser_is_unchanged(self):
+        self.assertEqual(readable_browser_cookie_spec("firefox"), "firefox")
+        self.assertEqual(readable_browser_cookie_spec(""), "")
 
 
 def patch_state_dir(folder):

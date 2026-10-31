@@ -68,6 +68,7 @@ from app.core.cookies import prepare_cookies_file
 from app.core.download import (
     ALL_MEDIA_KINDS, DEFAULT_FRAGMENTS, DEFAULT_VIDEO_QUALITY, DEFAULT_WORKERS,
     OUTPUT_TEMPLATE, VIDEO_QUALITY_CHOICES, episode_leaf_name, group_series_entries,
+    post_label,
     is_series_package, read_urls, resolve_filename_template, series_folder_for_items,
     source_folder_name, tiktok_dateafter,
 )
@@ -566,10 +567,15 @@ class JobRunnerMixin:
         ) or {"video"}
         packages = []
         url_media_kinds = {}
+        url_titles = {}
         for row in range(self.model.rowCount()):
             reel = self.model.reel_at(row)
             if reel.url not in wanted:
                 continue
+            if not is_series_package(reel):
+                caption = post_label(reel.title, reel.description, "")
+                if caption and caption != (reel.rid or ""):
+                    url_titles[reel.url] = caption
             if reel.variant:
                 if reel.variant in view_kinds:
                     url_media_kinds.setdefault(reel.url, set()).add(reel.variant)
@@ -610,6 +616,7 @@ class JobRunnerMixin:
             source_folders=folders,
             group_by_source=False,
             url_media_kinds=url_media_kinds,
+            url_titles=url_titles,
             **self._speed(),
         ))
 

@@ -237,6 +237,22 @@ class GuiSmoke(unittest.TestCase):
         self.assertTrue(hasattr(self.window, "version_label"))
         self.assertEqual(self.window.version_label.text(), f"v{__version__}")
 
+    def test_speedtest_result_fills_the_line_monitor(self):
+        self.assertEqual(self.window.stats["line"].text(), "—")
+        self.window._on_speedtest_ready({
+            "download_bps": 15_000_000,
+            "ping_ms": 18,
+            "server": "NearNet",
+            "name": "Phnom Penh",
+            "country": "Cambodia",
+            "isp": "Example ISP",
+        })
+        self.assertEqual(self.window.stats["line"].text(), "120 Mbps · 18 ms")
+        self.assertIn("NearNet", self.window._stat_cells["line"].toolTip())
+        self.assertEqual(self.window.overview.reading("Line"), "120 Mbps · 18 ms")
+        self.window._on_speedtest_ready({"error": "no server"})
+        self.assertEqual(self.window.stats["line"].text(), "—")
+
     def test_index_comes_before_the_checkbox_and_columns_can_move(self):
         header = self._table_header(self.window.table)
         self.assertTrue(header.sectionsMovable())

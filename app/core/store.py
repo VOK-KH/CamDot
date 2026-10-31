@@ -2,9 +2,9 @@
 import json
 import os
 
-from app.core.download import reel_id
+from app.core.download import post_label, reel_id
 from app.core.runtime import channel_state_dir
-from app.core.web_media import mp4_video_info, resolution_label
+from app.core.web_media import apply_caption_filename, mp4_video_info, resolution_label
 
 LIST_NAME = "list.json"
 ARCHIVE_NAME = ".downloaded.txt"
@@ -231,6 +231,11 @@ def reconcile_entries(entries, output_dir, archive_file=None):
                 rid, save_dir, output_dir,
                 partial=True, dir_cache=dir_cache, subdirs_cache=subdirs_cache,
             )
+        if finished and (
+            item.get("platform") == "instagram" or "instagram.com" in url.lower()
+        ):
+            caption = post_label(item.get("title") or "", item.get("description") or "", "")
+            finished = apply_caption_filename(finished, caption, rid) or finished
         if finished:
             item["status"] = "done"
             item["percent"] = 100.0

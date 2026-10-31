@@ -18,6 +18,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, timedelta
 from urllib.parse import urlencode, urlparse
 
+from app.core.cookies import readable_browser_cookie_spec
 from app.core.jobs import StopRequested, check_stop
 from app.core.platform_icons import platform_from_extractor
 from app.core.runtime import (
@@ -1117,6 +1118,7 @@ def _yt_dlp_args(
     if gpu_accel:
         args.extend(("--postprocessor-args", ffmpeg_postprocessor_arg(gpu_accel, workers=workers)))
     if cookies_browser:
+        cookies_browser = readable_browser_cookie_spec(cookies_browser) or cookies_browser
         args.extend(("--cookies-from-browser", cookies_browser))
     if cookies_file:
         args.extend(("--cookies", cookies_file))
@@ -1176,12 +1178,73 @@ class _ProcessGroup:
                 process.kill()
 
 
+def _rename_instagram_file(dest_dir, url, caption):
+    """Name an Instagram save from its caption when yt-dlp used the shortcode."""
+    from app.core.web_media import _instagram_media_info, apply_caption_filename
+
+    rid = reel_id(url)
+    cap = collapse_text(caption)
+    if not cap or cap == rid:
+        try:
+            info = _instagram_media_info(url) or {}
+        except Exception:
+            info = {}
+        cap = collapse_text(info.get("filename_prefix") or info.get("title") or "")
+    if not cap or cap == rid or not os.path.isdir(dest_dir):
+        return "", cap
+    renamed = ""
+    for dirpath, _, names in os.walk(dest_dir):
+        for name in names:
+            if name.endswith((".part", ".ytdl", ".json", ".description", ".jpg", ".webp")):
+                continue
+            path = os.path.join(dirpath, name)
+            new = apply_caption_filename(path, cap, rid)
+            if new and os.path.abspath(new) != os.path.abspath(path):
+                renamed = new
+    return renamed, cap
+
+
+def browser_cookie_hint(line):
+    """Explain a Chrome cookie failure in the download log."""
+    text = line or ""
+    if "Failed to decrypt with DPAPI" in text:
+        return (
+            "Chrome's saved login cannot be read. "
+            "In Settings → Cookies, paste a Cookie / cURL from a logged-in TikTok page, or choose Firefox."
+        )
+    if "Could not copy Chrome cookie database" in text:
+        return "Chrome's cookie file is still locked. Restart CamDot and download again."
+    if "could not find firefox cookies database" in text.lower():
+        return (
+            "Firefox is not installed, so there is no TikTok login to use. "
+            "Install Firefox, log in to TikTok, and leave Settings → Cookies on Firefox."
+        )
+    return ""
+
+
+def tiktok_missing_file_hint(line, *, cookies_browser="", cookies_file=""):
+    """Why a TikTok extract had metadata and no media file."""
+    if "No video formats found" not in (line or ""):
+        return ""
+    if (cookies_browser or "").strip() or (cookies_file or "").strip():
+        return (
+            "TikTok returned this episode without a video file. "
+            "Use a TikTok login that can open this drama under Settings → Cookies."
+        )
+    return (
+        "TikTok returned this episode without a video file. "
+        "Short dramas play in a logged-in account. "
+        "Set Settings → Cookies to Chrome, close Chrome, and download again."
+    )
+
+
 def _download_one(
     url, output_dir, fragments, archive_path, ffmpeg_location,
     log, on_progress, should_stop, group, cookies_browser="",
     filename_template="", cookies_file="", dateafter="",
     limit_rate="", media_kinds=None, source_folder="", kind_folders=None,
     channel="", video_quality="", gpu_accel="", workers=DEFAULT_WORKERS,
+    caption="",
 ):
     check_stop(should_stop)
     kinds = normalize_media_kinds(media_kinds)
@@ -1204,6 +1267,7 @@ def _download_one(
                 media_kinds=kinds,
                 gpu_accel=gpu_accel or "auto",
                 workers=workers,
+                caption=caption,
             ):
                 organize_media_into_kinds(dest_dir, kinds, kind_folders)
                 relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
@@ -1218,9 +1282,15 @@ def _download_one(
         on_progress(url, {"status": "failed", "code": 1})
         return 1
 
+    fetch_url = url
+    if platform == "tiktok":
+        from app.core.collect import tiktok_drama_watch_url
+        watch_url = tiktok_drama_watch_url(url)
+        if watch_url:
+            fetch_url = watch_url
     process = subprocess.Popen(
         _yt_dlp_args(
-            url, dest_dir, fragments, archive_path, ffmpeg_location,
+            fetch_url, dest_dir, fragments, archive_path, ffmpeg_location,
             cookies_browser=cookies_browser,
             filename_template=filename_template,
             cookies_file=cookies_file,
@@ -1236,6 +1306,7 @@ def _download_one(
         creationflags=_NO_WINDOW,
     )
     group.add(process)
+    hinted = False
     try:
         for raw in iter(process.stdout.readline, b""):
             check_stop(should_stop)
@@ -1255,6 +1326,16 @@ def _download_one(
                 on_progress(url, saved)
                 continue
             log(f"[{reel_id(url)}] {line}")
+            if hinted:
+                continue
+            hint = browser_cookie_hint(line)
+            if not hint and platform == "tiktok":
+                hint = tiktok_missing_file_hint(
+                    line, cookies_browser=cookies_browser, cookies_file=cookies_file,
+                )
+            if hint:
+                hinted = True
+                log(f"[{reel_id(url)}] {hint}")
         code = process.wait()
     except StopRequested:
         process.terminate()
@@ -1269,6 +1350,14 @@ def _download_one(
         process.stdout.close()
 
     platform = detect_platform(url)
+    if platform == "instagram":
+        renamed, shown = _rename_instagram_file(dest_dir, url, caption)
+        if renamed:
+            event = {"filepath": renamed}
+            if shown and shown != reel_id(url):
+                event["title"] = shown
+                event["description"] = shown
+            on_progress(url, event)
     if code != 0 and platform == "twitter":
         try:
             if _twitter_media_fallback(
@@ -1323,6 +1412,7 @@ def _download_one(
                 media_kinds=kinds,
                 gpu_accel=gpu_accel or "auto",
                 workers=workers,
+                caption=caption,
             ):
                 organize_media_into_kinds(dest_dir, kinds, kind_folders)
                 relocate_sidecars(dest_dir, kinds, channel, reel_id(url))
@@ -1423,6 +1513,7 @@ def download_urls(
     kind_folders=None,
     video_quality="",
     gpu_accel="",
+    url_titles=None,
 ):
     """Download every item URL, `workers` at a time. Returns the number of failures."""
     output_root = output_root or default_output_root()
@@ -1483,6 +1574,7 @@ def download_urls(
                 else (source_folder_name("", "", reel_id(url)) if group_by_source else ""),
                 kind_folders,
                 channel,
+                caption=(url_titles or {}).get(url, ""),
                 **extra_kw,
             ): url
             for url in urls

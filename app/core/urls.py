@@ -18,6 +18,10 @@ INSTAGRAM_TRACKING = (
 )
 INSTAGRAM_SINGLE_KINDS = ("p", "reel", "tv")
 INSTAGRAM_FEED_TABS = ("reels", "reposts", "tagged")
+INSTAGRAM_RESERVED = frozenset({
+    "explore", "accounts", "reel", "reels", "p", "tv", "stories",
+    "direct", "legal", "about", "developer", "directory", "lite",
+})
 DOUYIN_HOSTS = ("douyin.com", "iesdouyin.com", "v.douyin.com")
 KWAI_HOSTS = ("kwai.com", "kwai-video.com", "kw.ai", "s.kw.ai")
 SNACKVIDEO_HOSTS = ("snackvideo.com", "sck.io")
@@ -230,6 +234,20 @@ def tiktok_username(url):
     return ""
 
 
+def tiktok_drama_ids(url):
+    """``(drama_id, episode_number)`` from ``/shortdrama/episode/{id}/{n}``."""
+    if detect_platform(url) != "tiktok":
+        return "", ""
+    segments = _segments(urlparse(_with_scheme(url)).path)
+    if len(segments) < 3 or segments[0].lower() != "shortdrama" or segments[1].lower() != "episode":
+        return "", ""
+    drama_id = segments[2]
+    if not drama_id.isdigit():
+        return "", ""
+    episode = segments[3] if len(segments) >= 4 and segments[3].isdigit() else ""
+    return drama_id, episode
+
+
 def tiktok_sec_uid(url):
     """Return the sec_uid carried by a tiktokuser: input or an @MS4… URL."""
     url = clean_url(url)
@@ -395,6 +413,8 @@ def _classify_tiktok(parts):
     if segments and segments[0] in ("tag", "music", "effect"):
         return UNSUPPORTED_FEED
     if segments and segments[0].startswith("@"):
+        return FEED
+    if segments and segments[0] == "shortdrama":
         return FEED
     if not segments:
         return UNSUPPORTED_FEED
@@ -864,6 +884,38 @@ def collection_strategy(url):
     if kind == UNSUPPORTED_FEED:
         return "unsupported"
     return "ytdlp"
+
+
+def instagram_username(url):
+    """Profile username from a feed URL, or empty for a single post."""
+    if detect_platform(url) != "instagram":
+        return ""
+    segments = [part for part in urlparse(_with_scheme(url)).path.split("/") if part]
+    if not segments:
+        return ""
+    head = segments[0]
+    if head.lower() in INSTAGRAM_SINGLE_KINDS or head.lower() == "stories":
+        return ""
+    if head.lower() == "reels" and len(segments) >= 2:
+        return ""
+    if head.lower() in INSTAGRAM_RESERVED:
+        return ""
+    return head
+
+
+def instagram_shortcode(url):
+    """Post shortcode from /p/, /reel/, /tv/, or /reels/CODE."""
+    if detect_platform(url) != "instagram":
+        return ""
+    segments = [part for part in urlparse(_with_scheme(url)).path.split("/") if part]
+    kinds = set(INSTAGRAM_SINGLE_KINDS)
+    if segments and segments[0].lower() == "reels" and len(segments) >= 2:
+        return segments[1]
+    if len(segments) >= 2 and segments[0].lower() in kinds:
+        return segments[1]
+    if len(segments) >= 3 and segments[1].lower() in kinds:
+        return segments[2]
+    return ""
 
 
 def instagram_ytdlp_list_url(url):

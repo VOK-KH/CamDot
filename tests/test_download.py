@@ -6,6 +6,8 @@ import unittest
 from unittest.mock import patch
 
 from app.core.download import (
+    browser_cookie_hint,
+    tiktok_missing_file_hint,
     ALL_MEDIA_KINDS,
     FORMAT_SELECTOR,
     DEFAULT_FILENAME_PRESET,
@@ -139,6 +141,14 @@ class ParseInfoLine(unittest.TestCase):
 
 
 class YtDlpArgs(unittest.TestCase):
+    def setUp(self):
+        self._cookies = patch(
+            "app.core.download.readable_browser_cookie_spec",
+            side_effect=lambda spec, **_kwargs: spec,
+        )
+        self._cookies.start()
+        self.addCleanup(self._cookies.stop)
+
     def test_files_are_named_from_caption_then_id(self):
         args = _yt_dlp_args("https://www.facebook.com/reel/1", "out", 8, "out/.downloaded.txt")
         self.assertIn(os.path.join("out", OUTPUT_TEMPLATE), args)
@@ -746,6 +756,38 @@ class DownloadLayout(unittest.TestCase):
             self.assertFalse(os.path.isfile(os.path.join(downloads, "jireel.csv")))
 
 
+class InstagramCaptionFilename(unittest.TestCase):
+    def test_caption_is_the_file_stem(self):
+        from app.core.web_media import caption_file_stem
+
+        self.assertEqual(
+            caption_file_stem("ចំណង់ចំណូលចិត្តរបស់ខ្ញុំ", "De3YO83RM7p"),
+            "ចំណង់ចំណូលចិត្តរបស់ខ្ញុំ [De3YO83RM7p]",
+        )
+        self.assertEqual(caption_file_stem("De3YO83RM7p", "De3YO83RM7p"), "De3YO83RM7p")
+
+    def test_fallback_saves_instagram_with_the_caption(self):
+        from app.core.web_media import download_with_fallback
+
+        info = {
+            "id": "De3YO83RM7p",
+            "title": "Good morning",
+            "description": "Good morning",
+            "media": [("video", "https://cdn.example/reel.mp4")],
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.web_media.extract_web_media", return_value=info):
+                with patch("app.core.web_media.fetch_bytes", return_value=b"\x00\x00\x00\x18ftypmp42"):
+                    ok = download_with_fallback(
+                        "https://www.instagram.com/reel/De3YO83RM7p/",
+                        folder,
+                        item_id="De3YO83RM7p",
+                        media_kinds={"video"},
+                    )
+            self.assertTrue(ok)
+            self.assertTrue(os.path.isfile(os.path.join(folder, "Good morning [De3YO83RM7p].mp4")))
+
+
 class WebMediaFallbackDownload(unittest.TestCase):
     def test_drama_and_suno_fallback_downloads_when_ytdlp_unavailable(self):
         from app.core.web_media import download_with_fallback
@@ -926,10 +968,46 @@ class WebMediaFallbackDownload(unittest.TestCase):
                         )
                         self.assertTrue(ok)
                         ext = ".mp3" if platform_id == "suno" else ".mp4"
-                        self.assertTrue(
-                            os.path.isfile(os.path.join(folder, f"item_{platform_id}{ext}"))
-                            or os.path.isfile(os.path.join(folder, f"item_{platform_id}_1{ext}"))
-                        )
+                        saved = [
+                            name for name in os.listdir(folder)
+                            if name.endswith(ext) and (
+                                name.startswith(f"item_{platform_id}")
+                                or f"[item_{platform_id}]" in name
+                            )
+                        ]
+                        self.assertTrue(saved, platform_id)
+
+
+class TikTokMissingFileHint(unittest.TestCase):
+    def test_logged_out_short_drama_asks_for_cookies(self):
+        line = "ERROR: [TikTok] 7694487175114624274: No video formats found!"
+        hint = tiktok_missing_file_hint(line)
+        self.assertIn("Settings → Cookies", hint)
+        self.assertIn("Chrome", hint)
+
+    def test_configured_cookies_point_at_the_login(self):
+        line = "ERROR: [TikTok] 1: No video formats found!"
+        hint = tiktok_missing_file_hint(line, cookies_browser="chrome")
+        self.assertIn("Settings → Cookies", hint)
+        self.assertNotIn("close Chrome", hint)
+
+    def test_other_errors_stay_quiet(self):
+        self.assertEqual(tiktok_missing_file_hint("ERROR: Unsupported URL"), "")
+
+
+class BrowserCookieHint(unittest.TestCase):
+    def test_dpapi_failure_asks_for_a_cookie_paste(self):
+        hint = browser_cookie_hint(
+            "ERROR: Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927"
+        )
+        self.assertIn("Cookie / cURL", hint)
+        self.assertIn("Firefox", hint)
+
+    def test_missing_firefox_profile_says_to_install_it(self):
+        hint = browser_cookie_hint(
+            "ERROR: could not find firefox cookies database in 'C:\\Users\\Lufy\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles'"
+        )
+        self.assertIn("Firefox is not installed", hint)
 
 
 if __name__ == "__main__":

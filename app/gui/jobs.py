@@ -28,6 +28,7 @@ class JobWorker(QObject):
         cookies_file="", dateafter="", limit_rate="",
         media_kinds=None, source_folders=None, group_by_source=True,
         url_media_kinds=None, kind_folders=None, video_quality="", gpu_accel="",
+        url_titles=None,
     ):
         super().__init__()
         self.mode = mode
@@ -52,6 +53,7 @@ class JobWorker(QObject):
         self.kind_folders = kind_folders or {}
         self.video_quality = video_quality
         self.gpu_accel = gpu_accel
+        self.url_titles = url_titles or {}
         self._stop = False
         self._login = threading.Event()
         self._last_emit = {}
@@ -152,6 +154,7 @@ class JobWorker(QObject):
                 kind_folders=self.kind_folders,
                 video_quality=self.video_quality,
                 gpu_accel=self.gpu_accel,
+                url_titles=self.url_titles,
             )
             self.finished.emit("" if not failures else f"{failures} item(s) failed.")
         except StopRequested:

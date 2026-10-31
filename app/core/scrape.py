@@ -1,7 +1,9 @@
 """Collect reel/post URLs from a Facebook or Instagram page with Selenium."""
 import csv
+import json
 import os
 import re
+import sys
 from time import sleep
 from urllib.parse import urlparse
 
@@ -11,12 +13,28 @@ from app.core.urls import INSTAGRAM_SINGLE_KINDS, detect_platform
 
 _CAPTION_NOISE = {"reel", "reels", "video", "facebook", "watch", "play reel", "open reel"}
 _CAPTION_PREFIXES = ("reel by ", "reels by ", "video by ", "reel: ", "reels: ")
+_VIEW_COUNT_RE = re.compile(r"^\d+(?:\.\d+)?[kmb]?$", re.IGNORECASE)
+
+
+def looks_like_view_count(text):
+    """True for grid labels such as ``10.8k`` or ``1,082 views``."""
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        return False
+    lowered = raw.lower()
+    for suffix in (" views", " view", " likes", " like", " plays", " play"):
+        if lowered.endswith(suffix):
+            lowered = lowered[: -len(suffix)].strip()
+    compact = lowered.replace(" ", "").replace(",", "")
+    return bool(_VIEW_COUNT_RE.fullmatch(compact)) and (
+        compact[-1:].lower() in "kmb" or "." in compact or "," in raw
+    )
 
 
 def _clean_caption(text):
     """Keep a Facebook reel caption; drop empty chrome labels."""
     text = re.sub(r"\s+", " ", (text or "").strip())
-    if not text or text.lower() in _CAPTION_NOISE:
+    if not text or text.lower() in _CAPTION_NOISE or looks_like_view_count(text):
         return ""
     lowered = text.lower()
     for prefix in _CAPTION_PREFIXES:
@@ -119,6 +137,120 @@ def harvest_reel_cards(links, seen):
     return fresh
 
 
+def screen_work_area():
+    """Desktop work area as ``(left, top, right, bottom)`` pixels."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        rect = RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+            if rect.right > rect.left and rect.bottom > rect.top:
+                return (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
+    return (0, 0, 1600, 900)
+
+
+def prefer_large_chrome_window(profile_dir, bounds):
+    """Remember a full-size window so Chrome does not restore a small one."""
+    path = os.path.join(profile_dir, "Default", "Preferences")
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    left, top, right, bottom = bounds
+    placement = {
+        "left": int(left),
+        "top": int(top),
+        "right": int(right),
+        "bottom": int(bottom),
+        "maximized": True,
+        "work_area_left": int(left),
+        "work_area_top": int(top),
+        "work_area_right": int(right),
+        "work_area_bottom": int(bottom),
+    }
+    browser = data.get("browser")
+    if not isinstance(browser, dict):
+        browser = {}
+        data["browser"] = browser
+    browser["window_placement"] = placement
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, separators=(",", ":"))
+    except OSError:
+        return False
+    return True
+
+
+def present_browser_window(driver, bounds):
+    """Put the scraper Chrome on the work area instead of a restored small window."""
+    left, top, right, bottom = bounds
+    width = max(int(right) - int(left), 1200)
+    height = max(int(bottom) - int(top), 800)
+    try:
+        driver.set_window_rect(int(left), int(top), width, height)
+    except Exception:
+        pass
+    try:
+        driver.maximize_window()
+    except Exception:
+        pass
+
+
+def dismiss_signup_dialog(driver):
+    """Close Instagram or Facebook's login wall so the grid can be scrolled."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+
+    xpaths = (
+        "//*[@aria-label='Close']",
+        "//*[@aria-label='close']",
+        "//div[@role='dialog']//*[@aria-label='Close']",
+    )
+    for xpath in xpaths:
+        try:
+            elements = driver.find_elements(By.XPATH, xpath)
+        except Exception:
+            continue
+        for element in elements[:4]:
+            try:
+                element.click()
+                return True
+            except Exception:
+                continue
+    try:
+        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+    try:
+        clicked = driver.execute_script(
+            """
+            const close = document.querySelector(
+              '[aria-label="Close"], [aria-label="close"]'
+            );
+            if (!close) return false;
+            (close.closest('button, [role="button"]') || close).click();
+            return true;
+            """
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
 def scrape_reel_urls(
     channel,
     url,
@@ -147,29 +279,37 @@ def scrape_reel_urls(
     profile_dir = os.path.abspath(chrome_profile_dir())
     os.makedirs(profile_dir, exist_ok=True)
     options.add_argument(f"--user-data-dir={profile_dir}")
+    options.add_argument("--start-maximized")
+    options.add_argument("--window-position=0,0")
+    bounds = screen_work_area()
+    prefer_large_chrome_window(profile_dir, bounds)
 
     driver = webdriver.Chrome(options=options)
     try:
-        driver.maximize_window()
+        present_browser_window(driver, bounds)
         driver.get(url)
-        sleep(3)
+        present_browser_window(driver, bounds)
+        sleep(1)
+        present_browser_window(driver, bounds)
+        sleep(2)
         check_stop(should_stop)
 
-        # Close the login pop-up if it shows, so the page is usable. Don't crash if
-        # the button isn't there (Facebook changes this markup often).
-        try:
-            driver.find_element(By.XPATH, "//div[@aria-label='Close']").click()
-        except Exception:
-            pass
+        # The Reels grid sits under a Sign up dialog. Close it and collect;
+        # waiting here leaves the grabber stuck on that modal.
+        dismiss_signup_dialog(driver)
+        sleep(0.5)
+        dismiss_signup_dialog(driver)
 
         site = "Instagram" if detect_platform(url) == "instagram" else "Facebook"
-        # Feeds hide most posts from logged-out users. Pause here for a manual login.
-        log(f"Log in to {site} in the opened Chrome window so you can see ALL posts.")
-        log("When the page is ready, continue to start scrolling.")
-        if wait_for_login:
-            wait_for_login()
+        if site == "Instagram":
+            log("Closed the Instagram sign-up dialog and started collecting reels.")
         else:
-            input("Press Enter to start scrolling and collecting reels... ")
+            log(f"Log in to {site} in the opened Chrome window so you can see ALL posts.")
+            log("When the page is ready, continue to start scrolling.")
+            if wait_for_login:
+                wait_for_login()
+            else:
+                input("Press Enter to start scrolling and collecting reels... ")
         check_stop(should_stop)
 
         # Scroll to the bottom repeatedly to lazy-load every reel.
@@ -192,6 +332,7 @@ def scrape_reel_urls(
         _harvest()
         for step in range(scroll_steps):
             check_stop(should_stop)
+            dismiss_signup_dialog(driver)
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             sleep(scroll_interval)
             curr_scroll_position = driver.execute_script("return window.pageYOffset;")

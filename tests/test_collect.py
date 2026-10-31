@@ -825,36 +825,38 @@ class CollectEntries(unittest.TestCase):
             "webpage_url_domain": "instagram.com",
         }]
         with tempfile.TemporaryDirectory() as folder:
-            with patch("app.core.collect._collect_ytdlp", return_value=listed) as ytdlp:
-                with patch("app.core.collect.scrape_reel_urls") as scrape:
-                    _, entries = collect_entries(
-                        "ig",
-                        "https://www.instagram.com/2002chii_/reels/?hl=en",
-                        output_root=folder,
-                        log=lambda *_: None,
-                    )
-                    scrape.assert_not_called()
-                    ytdlp.assert_called_once()
-                    self.assertEqual(
-                        ytdlp.call_args.args[0],
-                        "https://www.instagram.com/2002chii_/",
-                    )
-                    self.assertEqual(entries[0]["id"], "AbC")
+            with patch("app.core.collect.extract_web_feed", return_value=[]):
+                with patch("app.core.collect._collect_ytdlp", return_value=listed) as ytdlp:
+                    with patch("app.core.collect.scrape_reel_urls") as scrape:
+                        _, entries = collect_entries(
+                            "ig",
+                            "https://www.instagram.com/2002chii_/reels/?hl=en",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+                        scrape.assert_not_called()
+                        ytdlp.assert_called_once()
+                        self.assertEqual(
+                            ytdlp.call_args.args[0],
+                            "https://www.instagram.com/2002chii_/",
+                        )
+                        self.assertEqual(entries[0]["id"], "AbC")
 
     def test_instagram_feed_ytdlp_fail_calls_scrape(self):
         with tempfile.TemporaryDirectory() as folder:
             csv_path = os.path.join(folder, "ig.csv")
             with open(csv_path, "w", encoding="utf-8") as f:
                 f.write("https://www.instagram.com/reel/AbC/\n")
-            with patch("app.core.collect._collect_ytdlp", side_effect=ValueError("Unable to extract data")):
-                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
-                    with patch("app.core.collect._extract_detail", return_value=None):
-                        collect_entries(
-                            "ig",
-                            "https://www.instagram.com/2002chii_/",
-                            output_root=folder,
-                            log=lambda *_: None,
-                        )
+            with patch("app.core.collect.extract_web_feed", return_value=[]):
+                with patch("app.core.collect._collect_ytdlp", side_effect=ValueError("Unable to extract data")):
+                    with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                        with patch("app.core.collect._extract_detail", return_value=None):
+                            collect_entries(
+                                "ig",
+                                "https://www.instagram.com/2002chii_/",
+                                output_root=folder,
+                                log=lambda *_: None,
+                            )
             scrape.assert_called_once()
             self.assertEqual(
                 scrape.call_args.args[1],
@@ -866,15 +868,16 @@ class CollectEntries(unittest.TestCase):
             csv_path = os.path.join(folder, "ig.csv")
             with open(csv_path, "w", encoding="utf-8") as f:
                 f.write("https://www.instagram.com/p/AbC/\n")
-            with patch("app.core.collect._collect_ytdlp", return_value=[]):
-                with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
-                    with patch("app.core.collect._extract_detail", return_value=None):
-                        collect_entries(
-                            "ig",
-                            "https://www.instagram.com/2002chii_/reels/",
-                            output_root=folder,
-                            log=lambda *_: None,
-                        )
+            with patch("app.core.collect.extract_web_feed", return_value=[]):
+                with patch("app.core.collect._collect_ytdlp", return_value=[]):
+                    with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                        with patch("app.core.collect._extract_detail", return_value=None):
+                            collect_entries(
+                                "ig",
+                                "https://www.instagram.com/2002chii_/reels/",
+                                output_root=folder,
+                                log=lambda *_: None,
+                            )
             scrape.assert_called_once()
             self.assertEqual(
                 scrape.call_args.args[1],
@@ -913,19 +916,78 @@ class CollectEntries(unittest.TestCase):
 
     def test_instagram_ytdlp_stop_does_not_open_chrome(self):
         with tempfile.TemporaryDirectory() as folder:
-            with patch(
-                "app.core.collect._collect_ytdlp",
-                side_effect=StopRequested("Cancelled."),
-            ):
-                with patch("app.core.collect.scrape_reel_urls") as scrape:
-                    with self.assertRaises(StopRequested):
-                        collect_entries(
+            with patch("app.core.collect.extract_web_feed", return_value=[]):
+                with patch(
+                    "app.core.collect._collect_ytdlp",
+                    side_effect=StopRequested("Cancelled."),
+                ):
+                    with patch("app.core.collect.scrape_reel_urls") as scrape:
+                        with self.assertRaises(StopRequested):
+                            collect_entries(
+                                "ig",
+                                "https://www.instagram.com/2002chii_/",
+                                output_root=folder,
+                                log=lambda *_: None,
+                            )
+                        scrape.assert_not_called()
+
+    def test_reels_tab_keeps_the_public_page_and_asks_chrome_for_the_rest(self):
+        listed = [{
+            "url": "https://www.instagram.com/reel/AbC/",
+            "id": "AbC",
+            "title": "A reel",
+            "description": "A reel",
+            "platform": "instagram",
+        }]
+        with tempfile.TemporaryDirectory() as folder:
+            csv_path = os.path.join(folder, "ig.csv")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("https://www.instagram.com/reel/New1/\n")
+                handle.write("https://www.instagram.com/p/Photo1/\n")
+            with patch("app.core.collect.extract_web_feed", return_value=listed):
+                with patch("app.core.collect._collect_ytdlp") as ytdlp:
+                    with patch("app.core.collect.scrape_reel_urls", return_value=csv_path) as scrape:
+                        with patch("app.core.collect._extract_detail", return_value=None):
+                            _, entries = collect_entries(
+                                "ig",
+                                "https://www.instagram.com/kimchandara7777/reels/",
+                                output_root=folder,
+                                log=lambda *_: None,
+                            )
+            ytdlp.assert_not_called()
+            scrape.assert_called_once()
+            self.assertEqual(
+                [item["url"] for item in entries],
+                [
+                    "https://www.instagram.com/reel/AbC/",
+                    "https://www.instagram.com/reel/New1/",
+                ],
+            )
+            self.assertEqual(entries[0]["title"], "A reel")
+
+    def test_instagram_profile_web_feed_skips_ytdlp_and_chrome(self):
+        listed = [{
+            "url": "https://www.instagram.com/p/AbC/",
+            "id": "AbC",
+            "title": "A post",
+            "uploader": "salysaouk",
+            "platform": "instagram",
+            "webpage_url_domain": "instagram.com",
+        }]
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect.extract_web_feed", return_value=listed):
+                with patch("app.core.collect._collect_ytdlp") as ytdlp:
+                    with patch("app.core.collect.scrape_reel_urls") as scrape:
+                        _, entries = collect_entries(
                             "ig",
-                            "https://www.instagram.com/2002chii_/",
+                            "https://www.instagram.com/salysaouk/",
                             output_root=folder,
                             log=lambda *_: None,
                         )
-                    scrape.assert_not_called()
+            ytdlp.assert_not_called()
+            scrape.assert_not_called()
+            self.assertEqual(entries[0]["url"], "https://www.instagram.com/p/AbC/")
+            self.assertEqual(entries[0]["id"], "AbC")
 
     def test_pinterest_board_feed_yields_image_pin_urls(self):
         board_id = "585890301462791043"
@@ -1081,6 +1143,272 @@ class CollectEntries(unittest.TestCase):
         self.assertEqual(entries[0]["series"], "Love on Hire (Uncut Ver.)")
         self.assertEqual(entries[1]["title"], "Love on Hire (Uncut Ver.) E2")
         self.assertTrue(any("Skipped 1 teaser/extra" in line for line in logs))
+
+
+class _HtmlOpener:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def __call__(self, request, timeout=None):
+        url = request.full_url
+        body = ""
+        for prefix, html in self.pages:
+            if url.startswith(prefix):
+                body = html
+                break
+        class _Resp:
+            def read(self_inner):
+                return body.encode("utf-8")
+
+            def geturl(self_inner):
+                return url
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                return False
+
+        return _Resp()
+
+
+class InstagramWeb(unittest.TestCase):
+    _PROFILE = (
+        '<script data-sjs>{"xig_user_by_username":{"pk":"1",'
+        '"polaris_ordered_timeline_connection":{"page_info":{"has_next_page":false},'
+        '"edges":[{"node":{"code":"AbC123","product_type":"clips","media_type":2,'
+        '"caption":{"text":"A reel"},"user":{"username":"someone"}}},'
+        '{"node":{"code":"DeF456","product_type":"carousel_container","media_type":8,'
+        '"caption":{"text":"A post"},"user":{"username":"someone"}}}]}}}</script>'
+    )
+    _POST = (
+        '<script data-sjs>{"media":{"code":"AbC123",'
+        '"video_versions":[{"url":"https://cdn.example.com/v.mp4","width":720}],'
+        '"caption":{"text":"Hello"},"user":{"username":"someone"},'
+        '"video_duration":12.5}}</script>'
+    )
+
+    def test_profile_html_lists_posts(self):
+        from app.core.web_media import extract_web_feed
+
+        opener = _HtmlOpener([("https://www.instagram.com/someone/", self._PROFILE)])
+        entries = extract_web_feed("https://www.instagram.com/someone/", opener=opener)
+        self.assertEqual(
+            [item["url"] for item in entries],
+            [
+                "https://www.instagram.com/reel/AbC123/",
+                "https://www.instagram.com/p/DeF456/",
+            ],
+        )
+        self.assertEqual(entries[0]["title"], "A reel")
+
+    def test_view_count_title_is_replaced_from_the_post(self):
+        from app.core.web_media import fill_instagram_captions
+
+        html = (
+            '<script data-sjs>{"media":{"code":"DfEwGEHSwoK",'
+            '"caption":{"text":"A real caption"}}}</script>'
+        )
+        opener = _HtmlOpener([
+            ("https://www.instagram.com/reel/DfEwGEHSwoK/", html),
+            ("https://www.instagram.com/p/DfEwGEHSwoK/", html),
+        ])
+        entries = [{
+            "url": "https://www.instagram.com/reels/DfEwGEHSwoK/",
+            "id": "DfEwGEHSwoK",
+            "title": "10.8k",
+            "description": "10.8k",
+        }]
+        fill_instagram_captions(entries, opener=opener)
+        self.assertEqual(entries[0]["title"], "A real caption")
+        self.assertEqual(entries[0]["description"], "A real caption")
+
+    def test_reels_tab_reads_the_clips_list(self):
+        from app.core.web_media import extract_web_feed
+
+        html = (
+            '<script data-sjs>{"user":{"polaris_clips_connection":'
+            '{"page_info":{"has_next_page":true},"edges":['
+            '{"node":{"code":"ReelOne","product_type":"clips","user":{"username":"someone"}}},'
+            '{"node":{"code":"ReelTwo","product_type":"clips"}}'
+            "]}}}</script>"
+        )
+        opener = _HtmlOpener([
+            ("https://www.instagram.com/someone/reels/", html),
+            ("https://www.instagram.com/someone/", self._PROFILE),
+        ])
+        entries = extract_web_feed("https://www.instagram.com/someone/reels/", opener=opener)
+        self.assertEqual(
+            [item["url"] for item in entries],
+            [
+                "https://www.instagram.com/reel/ReelOne/",
+                "https://www.instagram.com/reel/ReelTwo/",
+            ],
+        )
+
+    def test_reels_tab_keeps_videos_only(self):
+        from app.core.web_media import extract_web_feed
+
+        opener = _HtmlOpener([("https://www.instagram.com/someone/", self._PROFILE)])
+        entries = extract_web_feed("https://www.instagram.com/someone/reels/", opener=opener)
+        self.assertEqual(
+            [item["url"] for item in entries],
+            ["https://www.instagram.com/reel/AbC123/"],
+        )
+
+    def test_post_html_returns_video(self):
+        from app.core.web_media import extract_web_media
+
+        opener = _HtmlOpener([("https://www.instagram.com/", self._POST)])
+        info = extract_web_media("https://www.instagram.com/reel/AbC123/", opener=opener)
+        self.assertEqual(info["id"], "AbC123")
+        self.assertEqual(info["media"][0], ("video", "https://cdn.example.com/v.mp4"))
+        self.assertEqual(info["duration"], 12.5)
+
+
+def _tiktok_profile_html(user, items, count):
+    payload = {
+        "__DEFAULT_SCOPE__": {
+            "webapp.user-detail": {
+                "userInfo": {
+                    "user": user,
+                    "stats": {"videoCount": count},
+                    "itemList": items,
+                }
+            }
+        }
+    }
+    return (
+        '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
+        + json.dumps(payload)
+        + "</script>"
+    )
+
+
+class TikTokShortDrama(unittest.TestCase):
+    def test_episode_link_lists_the_whole_drama(self):
+        from app.core.download import group_series_entries
+
+        pages = {
+            "/api/drama/detail/": {
+                "dramaInfo": {
+                    "dramaID": "7697783154266756117",
+                    "dramaName": "The Canal Exposes Village Lies",
+                    "numVideos": 2,
+                    "description": "A canal of clear water.",
+                    "author": {"user": {"uniqueId": "clipnest_id_01", "nickname": "ClipNest"}},
+                }
+            },
+            "/api/drama/episode/item_list/": {
+                "hasMore": False,
+                "cursor": "2",
+                "itemList": [
+                    {
+                        "id": "222",
+                        "desc": "Episode 2",
+                        "video": {"duration": 90},
+                        "dramaInfo": {"DramaVideoData": {"EpisodeNumber": 2}},
+                    },
+                    {
+                        "id": "111",
+                        "desc": "Episode 1",
+                        "video": {"duration": 151},
+                        "dramaInfo": {"DramaVideoData": {"EpisodeNumber": 1}},
+                    },
+                ],
+            },
+        }
+
+        def fake_json(_session, path, _query, timeout=20):
+            return pages[path]
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect._tiktok_drama_session", return_value=object()):
+                with patch("app.core.collect._tiktok_api_json", side_effect=fake_json):
+                    _, entries = collect_entries(
+                        "tt",
+                        "https://www.tiktok.com/shortdrama/episode/7697783154266756117/1?_r=1",
+                        output_root=folder,
+                        log=lambda *_: None,
+                    )
+        self.assertEqual(
+            [item["url"] for item in entries],
+            [
+                "https://www.tiktok.com/@clipnest_id_01/video/111",
+                "https://www.tiktok.com/@clipnest_id_01/video/222",
+            ],
+        )
+        self.assertEqual(entries[0]["title"], "The Canal Exposes Village Lies E1")
+        self.assertEqual(entries[0]["uploader"], "ClipNest")
+        self.assertEqual(entries[0]["duration"], 151)
+        grouped = group_series_entries(entries)
+        self.assertEqual(grouped[0]["title"], "The Canal Exposes Village Lies")
+        self.assertEqual(grouped[0]["package_kind"], "series")
+
+
+class TikTokProfilePage(unittest.TestCase):
+    def test_empty_profile_says_there_are_no_public_videos(self):
+        html = _tiktok_profile_html(
+            {
+                "uniqueId": "clipnest_id_01",
+                "nickname": "ClipNest",
+                "secUid": "MS4wLjABAAAAtest",
+            },
+            [],
+            0,
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect._fetch_tiktok_profile_html", return_value=html):
+                with patch("app.core.collect._collect_ytdlp") as ytdlp:
+                    with self.assertRaises(ValueError) as caught:
+                        collect_entries(
+                            "tt",
+                            "https://www.tiktok.com/@clipnest_id_01?_r=1&_t=ZS-9B0SkAatnYv",
+                            output_root=folder,
+                            log=lambda *_: None,
+                        )
+        ytdlp.assert_not_called()
+        self.assertIn("ClipNest (@clipnest_id_01)", str(caught.exception))
+        self.assertIn("no public videos", str(caught.exception))
+
+    def test_profile_videos_become_a_series_folder(self):
+        from app.core.download import group_series_entries
+
+        html = _tiktok_profile_html(
+            {
+                "uniqueId": "clipnest_id_01",
+                "nickname": "ClipNest",
+                "secUid": "MS4wLjABAAAAtest",
+            },
+            [
+                {"id": "111", "desc": "Nest Episode 1", "video": {"duration": 61}},
+                {"id": "222", "desc": "Nest Episode 2", "video": {"duration": 58}},
+            ],
+            2,
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("app.core.collect._fetch_tiktok_profile_html", return_value=html):
+                with patch("app.core.collect._collect_ytdlp") as ytdlp:
+                    _, entries = collect_entries(
+                        "tt",
+                        "https://www.tiktok.com/@clipnest_id_01",
+                        output_root=folder,
+                        log=lambda *_: None,
+                    )
+        ytdlp.assert_not_called()
+        self.assertEqual(
+            [item["url"] for item in entries],
+            [
+                "https://www.tiktok.com/@clipnest_id_01/video/111",
+                "https://www.tiktok.com/@clipnest_id_01/video/222",
+            ],
+        )
+        self.assertEqual(entries[0]["title"], "Nest Episode 1")
+        self.assertEqual(entries[0]["duration"], 61)
+        grouped = group_series_entries(entries)
+        self.assertEqual(grouped[0]["package_kind"], "series")
+        self.assertEqual(grouped[0]["title"], "ClipNest")
+        self.assertEqual(len(grouped), 3)
 
 
 if __name__ == "__main__":

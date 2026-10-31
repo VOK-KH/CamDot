@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse
 
 from app.core.jobs import StopRequested, check_stop
@@ -29,6 +30,8 @@ from app.core.urls import (
     flickreels_play_ids,
     goodshort_play_ids,
     hongguo_play_ids,
+    instagram_shortcode,
+    instagram_username,
     is_scraped_media_url,
 )
 
@@ -65,6 +68,14 @@ _IMAGE_URL_RE = re.compile(
     r'https?:(?:\\?/\\?/|//)[^\s"\'<>\\]+?\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>\\]*)?',
     re.IGNORECASE,
 )
+_SJS_RE = re.compile(r"<script\b[^>]+\bdata-sjs>(\{.+?\})</script>", re.IGNORECASE | re.DOTALL)
+_IG_ANDROID_UA = (
+    "Mozilla/5.0 (Linux; Android 14; SM-S921B Build/UP1A.231005.007; wv) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 "
+    "Mobile Safari/537.36 Instagram 340.0.0.36.90 Android "
+    "(34/14; 480dpi; 1080x2340; samsung; SM-S921B; e1s; s5e9945; en_US; 629151101)"
+)
+_IG_ANDROID_APP_ID = "3419628305025917"
 _HREF_RE = re.compile(r'<a\b[^>]+?\bhref=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 _EPISODE_HREF_RE = re.compile(
     r"(?:/(?:ep|episode|episodes|chapter|watch|play)[-_/\d]|(?:\?|&)(?:ep|episode|chapter)=)",
@@ -435,8 +446,8 @@ def mp4_video_info(path):
                                 timescale, duration = struct.unpack(">II", body[12:20])
                                 if timescale > 0:
                                     dur = round(duration / timescale, 2)
-                            elif version == 1 and len(body) >= 28:
-                                timescale, duration = struct.unpack(">IQ", body[20:28])
+                            elif version == 1 and len(body) >= 32:
+                                timescale, duration = struct.unpack(">IQ", body[20:32])
                                 if timescale > 0:
                                     dur = round(duration / timescale, 2)
                     elif box_type == b"tkhd":
@@ -452,7 +463,7 @@ def mp4_video_info(path):
                     handle.seek(pos + box_size)
 
             scan(size)
-    except OSError:
+    except (OSError, struct.error, ValueError):
         pass
     return dur, width, height
 
@@ -1020,6 +1031,523 @@ def _hongguo_media_info(url, page_html="", final_url="", opener=None, timeout=15
     }
 
 
+def _walk_json(obj, visit):
+    if isinstance(obj, dict):
+        visit(obj)
+        for value in obj.values():
+            _walk_json(value, visit)
+    elif isinstance(obj, list):
+        for value in obj:
+            _walk_json(value, visit)
+
+
+def _parse_sjs_blobs(html):
+    blobs = []
+    for raw in _SJS_RE.findall(html or ""):
+        try:
+            blobs.append(json.loads(raw))
+        except json.JSONDecodeError:
+            continue
+    return blobs
+
+
+def _ig_caption(node):
+    caption = node.get("caption")
+    if isinstance(caption, dict):
+        return str(caption.get("text") or "").strip()
+    if isinstance(caption, str):
+        return caption.strip()
+    edges = ((node.get("edge_media_to_caption") or {}).get("edges") or [])
+    if edges and isinstance(edges[0], dict):
+        return str(((edges[0].get("node") or {}).get("text")) or "").strip()
+    return ""
+
+
+def _ig_best_url(versions, key="url"):
+    ranked = []
+    for item in versions or []:
+        if not isinstance(item, dict) or not item.get(key):
+            continue
+        ranked.append((int(item.get("width") or item.get("height") or 0), item[key]))
+    if not ranked:
+        return ""
+    ranked.sort(reverse=True)
+    return ranked[0][1]
+
+
+def _ig_post_url(node, username=""):
+    code = str(node.get("code") or node.get("shortcode") or "").strip()
+    if not code:
+        return ""
+    product = str(node.get("product_type") or "").lower()
+    kind = "reel" if product in ("clips", "clips_home", "igtv") or node.get("media_type") == 2 else "p"
+    if node.get("is_video") is True and kind == "p" and product in ("", "feed"):
+        kind = "reel" if product == "clips" else "p"
+    if username and kind == "p" and product == "clips":
+        kind = "reel"
+    return f"https://www.instagram.com/{kind}/{code}/"
+
+
+def _ig_connection_nodes(html, key):
+    """Media nodes from one profile connection (timeline or the Reels tab)."""
+    nodes = []
+    seen = set()
+
+    def visit(obj):
+        conn = obj.get(key)
+        if not isinstance(conn, dict):
+            return
+        for edge in conn.get("edges") or []:
+            node = (edge or {}).get("node") if isinstance(edge, dict) else None
+            if not isinstance(node, dict):
+                continue
+            code = str(node.get("code") or node.get("shortcode") or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            nodes.append(node)
+
+    for blob in _parse_sjs_blobs(html):
+        _walk_json(blob, visit)
+    return nodes
+
+
+def _ig_timeline_nodes(html):
+    return _ig_connection_nodes(html, "polaris_ordered_timeline_connection")
+
+
+_IG_REELS_QUERY_NAME = "PolarisLoggedOutDesktopWWWProfileReelsTabContentQuery"
+_IG_REELS_DOC_ID = "27838951732404191"
+_IG_WEB_APP_ID = "936619743392459"
+_IG_REELS_PAGE_CAP = 40
+
+
+def _ig_lsd(html):
+    match = re.search(r'"lsd"\s*:\s*"([^"]+)"', html or "")
+    return match.group(1) if match else ""
+
+
+def _ig_reels_doc_id(html):
+    match = re.search(
+        r'"queryID"\s*:\s*"(\d+)"\s*,\s*"variables"\s*:\s*\{[^}]*\}\s*,\s*"queryName"\s*:\s*"'
+        + re.escape(_IG_REELS_QUERY_NAME) + '"',
+        html or "",
+    )
+    if match:
+        return match.group(1)
+    match = re.search(
+        r'"queryName"\s*:\s*"' + re.escape(_IG_REELS_QUERY_NAME) + r'"[^}]{0,200}"queryID"\s*:\s*"(\d+)"',
+        html or "",
+    )
+    return match.group(1) if match else _IG_REELS_DOC_ID
+
+
+def _ig_clips_page_info(html):
+    found = {}
+
+    def visit(obj):
+        conn = obj.get("polaris_clips_connection")
+        if isinstance(conn, dict) and isinstance(conn.get("page_info"), dict):
+            found.update(conn["page_info"])
+
+    for blob in _parse_sjs_blobs(html or ""):
+        _walk_json(blob, visit)
+    return found
+
+
+def _ig_clips_connection(payload):
+    found = {}
+
+    def visit(obj):
+        conn = obj.get("polaris_clips_connection")
+        if isinstance(conn, dict) and conn.get("edges"):
+            found["conn"] = conn
+
+    _walk_json(payload, visit)
+    return found.get("conn") or {}
+
+
+def _ig_reels_query(session, username, cursor, lsd, doc_id, timeout=20):
+    """Next page of a profile's Reels tab."""
+    variables = json.dumps({
+        "after": cursor,
+        "first": 12,
+        "username": username,
+    }, separators=(",", ":"))
+    csrf = ""
+    jar = getattr(session, "cookies", None)
+    if jar is not None:
+        try:
+            csrf = jar.get("csrftoken") or ""
+        except Exception:
+            csrf = ""
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-FB-LSD": lsd,
+        "X-IG-App-ID": _IG_WEB_APP_ID,
+        "X-FB-Friendly-Name": _IG_REELS_QUERY_NAME,
+        "Referer": f"https://www.instagram.com/{username}/reels/",
+    }
+    if csrf:
+        headers["X-CSRFToken"] = csrf
+    try:
+        response = session.post(
+            "https://www.instagram.com/graphql/query",
+            data={
+                "lsd": lsd,
+                "fb_api_req_friendly_name": _IG_REELS_QUERY_NAME,
+                "variables": variables,
+                "doc_id": doc_id,
+            },
+            headers=headers,
+            impersonate="chrome",
+            timeout=timeout,
+        )
+    except Exception:
+        return {}
+    if response.status_code >= 400 or not (response.text or "").startswith("{"):
+        return {}
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ig_append_clips(nodes, seen, conn):
+    added = []
+    for edge in (conn or {}).get("edges") or []:
+        node = (edge or {}).get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            continue
+        code = str(node.get("code") or node.get("shortcode") or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        nodes.append(node)
+        added.append(node)
+    return added
+
+
+def _ig_all_reels(username, html, nodes, *, timeout=20):
+    """Follow the Reels tab cursor until Instagram says there is no next page."""
+    info = _ig_clips_page_info(html)
+    cursor = str(info.get("end_cursor") or "")
+    if not info.get("has_next_page") or not cursor:
+        return nodes
+    lsd = _ig_lsd(html)
+    doc_id = _ig_reels_doc_id(html)
+    if not lsd or not doc_id:
+        return nodes
+    try:
+        from curl_cffi import requests as curl_requests
+        session = curl_requests.Session()
+        warmed = session.get(
+            f"https://www.instagram.com/{username}/reels/",
+            impersonate="chrome",
+            timeout=timeout,
+        )
+    except Exception:
+        return nodes
+    warmed_html = warmed.text or ""
+    if warmed_html:
+        html = warmed_html
+        fresh = _ig_feed_nodes(html, videos_only=True)
+        if fresh:
+            nodes[:] = fresh
+        info = _ig_clips_page_info(html)
+        cursor = str(info.get("end_cursor") or "")
+        lsd = _ig_lsd(html)
+        doc_id = _ig_reels_doc_id(html)
+        if not info.get("has_next_page") or not cursor or not lsd or not doc_id:
+            return nodes
+    seen = {
+        str(node.get("code") or node.get("shortcode") or "")
+        for node in nodes
+    }
+    seen.discard("")
+    for _page in range(_IG_REELS_PAGE_CAP):
+        payload = _ig_reels_query(session, username, cursor, lsd, doc_id, timeout=timeout)
+        conn = _ig_clips_connection(payload)
+        if not conn:
+            break
+        added = _ig_append_clips(nodes, seen, conn)
+        page = conn.get("page_info") if isinstance(conn.get("page_info"), dict) else {}
+        next_cursor = str(page.get("end_cursor") or "")
+        if not added or not page.get("has_next_page") or not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    return nodes
+
+
+def _ig_caption_for_code(html, code):
+    """Caption that belongs to this shortcode, not a suggested reel beside it."""
+    found = []
+
+    def visit(obj):
+        node_code = str(obj.get("code") or obj.get("shortcode") or "").strip()
+        if node_code != code:
+            return
+        caption = _ig_caption(obj)
+        if caption:
+            found.append(caption)
+
+    for blob in _parse_sjs_blobs(html or ""):
+        _walk_json(blob, visit)
+    return found[0] if found else ""
+
+
+def instagram_caption(url, *, opener=None, timeout=20):
+    """Caption text from a reel or post page."""
+    from app.core.scrape import looks_like_view_count
+
+    code = instagram_shortcode(url)
+    if not code:
+        return ""
+    pages = [
+        f"https://www.instagram.com/reel/{code}/",
+        f"https://www.instagram.com/p/{code}/",
+    ]
+    for page_url in pages:
+        try:
+            html, _final = fetch_text(page_url, timeout=timeout, opener=opener)
+        except Exception:
+            continue
+        caption = _ig_caption_for_code(html, code)
+        if caption and caption != code and not looks_like_view_count(caption):
+            return caption
+    return ""
+
+
+def fill_instagram_captions(entries, *, opener=None, timeout=20):
+    """Replace missing titles and view-count labels with the post caption."""
+    from app.core.scrape import looks_like_view_count
+
+    pending = []
+    for entry in entries or []:
+        url = entry.get("url") or ""
+        if "instagram.com" not in url or not instagram_shortcode(url):
+            continue
+        title = (entry.get("title") or "").strip()
+        code = instagram_shortcode(url)
+        if title and title != code and not looks_like_view_count(title):
+            continue
+        pending.append(entry)
+    if not pending:
+        return entries
+
+    def fill(entry):
+        caption = instagram_caption(entry.get("url") or "", opener=opener, timeout=timeout)
+        if not caption:
+            return
+        entry["title"] = caption
+        entry["description"] = caption
+
+    workers = min(6, len(pending))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(fill, pending))
+    return entries
+
+
+def _ig_feed_nodes(html, *, videos_only=False):
+    """Reels tab pages list clips in polaris_clips_connection, not the timeline."""
+    if videos_only:
+        clips = _ig_connection_nodes(html, "polaris_clips_connection")
+        if clips:
+            return clips
+    return _ig_timeline_nodes(html)
+
+
+def _ig_media_from_html(html):
+    videos = []
+    images = []
+    title = ""
+    uploader = ""
+    duration = None
+
+    def visit(obj):
+        nonlocal title, uploader, duration
+        versions = obj.get("video_versions")
+        if versions:
+            url = _ig_best_url(versions)
+            if url:
+                videos.append(url)
+        if obj.get("video_url"):
+            videos.append(str(obj["video_url"]))
+        candidates = ((obj.get("image_versions2") or {}).get("candidates")) or []
+        image = _ig_best_url(candidates) or obj.get("display_uri") or obj.get("display_url")
+        if image:
+            images.append(str(image))
+        caption = _ig_caption(obj)
+        if caption and not title:
+            title = caption
+        user = obj.get("user") if isinstance(obj.get("user"), dict) else {}
+        if user.get("username") and not uploader:
+            uploader = str(user["username"])
+        raw_dur = obj.get("video_duration") or obj.get("duration")
+        if duration is None and raw_dur not in (None, ""):
+            try:
+                duration = round(float(raw_dur), 2)
+            except (TypeError, ValueError):
+                pass
+        for item in obj.get("carousel_media") or []:
+            if isinstance(item, dict):
+                visit(item)
+
+    for blob in _parse_sjs_blobs(html):
+        _walk_json(blob, visit)
+    return videos, images, title, uploader, duration
+
+
+def _ig_profile_nodes_from_api(username, *, opener=None, timeout=20):
+    if not username:
+        return [], ""
+    try:
+        body, _final = fetch_text(
+            f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
+            headers={
+                "User-Agent": _IG_ANDROID_UA,
+                "X-IG-App-ID": _IG_ANDROID_APP_ID,
+                "Accept": "*/*",
+            },
+            timeout=timeout,
+            opener=opener,
+        )
+        data = json.loads(body)
+    except Exception:
+        return [], ""
+    user = ((data.get("data") or {}).get("user") or {})
+    uploader = str(user.get("username") or username)
+    nodes = []
+    for edge in ((user.get("edge_owner_to_timeline_media") or {}).get("edges") or []):
+        node = (edge or {}).get("node") if isinstance(edge, dict) else None
+        if isinstance(node, dict):
+            nodes.append(node)
+    return nodes, uploader
+
+
+def _ig_entries_from_nodes(nodes, username, *, videos_only=False):
+    entries = []
+    seen = set()
+    for node in nodes:
+        url = _ig_post_url(node, username)
+        if not url or url in seen:
+            continue
+        is_video = (
+            node.get("is_video") is True
+            or node.get("media_type") == 2
+            or str(node.get("product_type") or "").lower() in ("clips", "clips_home", "igtv")
+        )
+        if videos_only and not is_video:
+            continue
+        seen.add(url)
+        code = str(node.get("code") or node.get("shortcode") or "").strip()
+        caption = _ig_caption(node)
+        user = node.get("user") if isinstance(node.get("user"), dict) else {}
+        uploader = str(user.get("username") or username or "")
+        entries.append({
+            "url": url,
+            "id": code,
+            "title": caption or code,
+            "description": caption,
+            "uploader": uploader,
+            "platform": "instagram",
+            "webpage_url_domain": "instagram.com",
+        })
+    return entries
+
+
+def _instagram_feed_entries(url, *, opener=None, timeout=20):
+    username = instagram_username(url)
+    if not username:
+        return []
+    videos_only = "/reels/" in (urlparse(url).path or "").lower()
+    nodes = []
+    pages = [url, f"https://www.instagram.com/{username}/"]
+    if videos_only:
+        pages.insert(1, f"https://www.instagram.com/{username}/reels/")
+    seen_html = set()
+    html = ""
+    for page_url in pages:
+        if page_url in seen_html:
+            continue
+        seen_html.add(page_url)
+        try:
+            html, _final = fetch_text(page_url, timeout=timeout, opener=opener)
+        except Exception:
+            html = ""
+            continue
+        nodes.extend(_ig_feed_nodes(html, videos_only=videos_only))
+        if nodes:
+            break
+    if videos_only and nodes and opener is None and html:
+        nodes = _ig_all_reels(username, html, nodes, timeout=timeout)
+    uploader = username
+    if not nodes:
+        api_nodes, api_name = _ig_profile_nodes_from_api(
+            username, opener=opener, timeout=timeout,
+        )
+        nodes = api_nodes
+        uploader = api_name or username
+    entries = _ig_entries_from_nodes(nodes, uploader, videos_only=videos_only)
+    if videos_only and entries:
+        fill_instagram_captions(entries, opener=opener, timeout=timeout)
+    return entries
+
+
+def _instagram_media_info(url, *, opener=None, timeout=20):
+    short = instagram_shortcode(url)
+    if not short:
+        return None
+    pages = [
+        url,
+        f"https://www.instagram.com/p/{short}/",
+        f"https://www.instagram.com/reel/{short}/",
+    ]
+    videos, images, title, uploader, duration = [], [], "", "", None
+    seen = set()
+    for page_url in pages:
+        if page_url in seen:
+            continue
+        seen.add(page_url)
+        try:
+            html, _final = fetch_text(page_url, timeout=timeout, opener=opener)
+        except Exception:
+            continue
+        videos, images, title, uploader, duration = _ig_media_from_html(html)
+        matched = _ig_caption_for_code(html, short)
+        if matched:
+            title = matched
+        if videos or images:
+            break
+    media = []
+    used = set()
+    for stream in videos:
+        if stream in used:
+            continue
+        used.add(stream)
+        media.append(("video", stream))
+    if not media:
+        for image in images:
+            if image in used:
+                continue
+            used.add(image)
+            media.append(("image", image))
+    if not media:
+        return None
+    caption = title if title and title != short else ""
+    return {
+        "id": short,
+        "title": title or short,
+        "description": title,
+        "uploader": uploader or "",
+        "duration": duration,
+        "filename_prefix": caption,
+        "media": media,
+    }
+
+
 def extract_web_media(url, *, opener=None, timeout=20):
     """Inspect a URL using fallback HTTP libraries and return media streams + metadata."""
     platform = detect_platform(url)
@@ -1060,6 +1588,10 @@ def extract_web_media(url, *, opener=None, timeout=20):
             fr_fast = _flickreels_media_info(url, final_url=url)
             if fr_fast:
                 return fr_fast
+    if platform == "instagram" and instagram_shortcode(url):
+        ig = _instagram_media_info(url, opener=opener, timeout=timeout)
+        if ig:
+            return ig
 
     # Suno direct UUID can be resolved even before network if network is unreachable,
     # but try fetching the page first for the real song title and /s/ short-link redirect.
@@ -1106,6 +1638,11 @@ def extract_web_media(url, *, opener=None, timeout=20):
             return fr
         if "ShallowReactive" in (page_html or ""):
             return None
+
+    if platform == "instagram":
+        ig = _instagram_media_info(url, opener=opener, timeout=timeout)
+        if ig:
+            return ig
 
     meta = _parse_meta_tags(page_html)
     title_match = _TITLE_TAG_RE.search(page_html or "")
@@ -1195,6 +1732,8 @@ def extract_web_media(url, *, opener=None, timeout=20):
 def extract_web_feed(url, *, opener=None, timeout=20):
     """Extract episode / playlist URLs from a drama series or Suno playlist page."""
     platform = detect_platform(url)
+    if platform == "instagram":
+        return _instagram_feed_entries(url, opener=opener, timeout=timeout)
     try:
         page_html, final_url = fetch_text(url, timeout=timeout, opener=opener)
     except Exception:
@@ -1480,6 +2019,39 @@ def _download_hls_with_ffmpeg(
     return code == 0 and os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0
 
 
+def apply_caption_filename(path, caption, item_id):
+    """Rename an ``id.mp4`` save to ``Caption [id].mp4`` when a caption is known."""
+    if not path or not os.path.isfile(path):
+        return path or ""
+    folder, name = os.path.split(path)
+    base, ext = os.path.splitext(name)
+    rid = re.sub(r'[\\/:*?"<>|]+', "_", str(item_id or "")).strip(" ._")
+    stem = caption_file_stem(caption, item_id or rid)
+    if not rid or stem == rid or base == stem:
+        return path
+    if base != rid and not base.endswith(f" [{rid}]"):
+        return path
+    dest = os.path.join(folder, stem + ext)
+    if os.path.abspath(dest) == os.path.abspath(path) or os.path.exists(dest):
+        return path
+    os.replace(path, dest)
+    return dest
+
+
+def caption_file_stem(caption, item_id, limit=80):
+    """``Caption [id]`` for a saved post, or just the id when there is no caption."""
+    rid = re.sub(r'[\\/:*?"<>|]+', "_", str(item_id or "media")).strip(" ._") or "media"
+    text = re.sub(r"\s+", " ", str(caption or "")).strip()
+    text = re.sub(r'[\\/:*?"<>|]+', "_", text).strip(" ._")
+    if text.lower() in ("", rid.lower(), "na", "none"):
+        return rid
+    if len(text) > limit:
+        text = text[:limit].rstrip(" ._")
+    if not text:
+        return rid
+    return f"{text} [{rid}]"
+
+
 def download_with_fallback(
     url,
     output_dir,
@@ -1494,6 +2066,7 @@ def download_with_fallback(
     opener=None,
     gpu_accel="auto",
     workers=4,
+    caption="",
 ):
     """Download media for `url` using fallback libraries (curl_cffi / requests / urllib / ffmpeg)."""
     check_stop(should_stop)
@@ -1527,8 +2100,12 @@ def download_with_fallback(
 
     os.makedirs(output_dir, exist_ok=True)
     rid = re.sub(r'[\\/:*?"<>|]+', "_", str(item_id or info.get("id") or "media")).strip(" ._") or "media"
-    prefix_raw = re.sub(r'[\\/:*?"<>|]+', "_", str(info.get("filename_prefix") or "")).strip(" ._")
-    base_stem = f"{prefix_raw} [{rid}]" if prefix_raw else rid
+    prefix_raw = caption or info.get("filename_prefix") or ""
+    if not prefix_raw and detect_platform(url) == "instagram":
+        candidate = info.get("description") or info.get("title") or ""
+        if candidate and candidate not in (rid, info.get("id")):
+            prefix_raw = candidate
+    base_stem = caption_file_stem(prefix_raw, rid) if prefix_raw else rid
     saved = []
 
     for index, (kind, media_url) in enumerate(selected, start=1):

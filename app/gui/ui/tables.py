@@ -487,6 +487,7 @@ class TableColumnsMixin:
             (tr("Links"), str(data["links"])),
             (tr("Done"), str(counts.get("done", 0))),
             (tr("Speed"), f"{sysinfo.human_bytes(data['speed'])}/s"),
+            (tr("Line"), self.stats["line"].text() if "line" in getattr(self, "stats", {}) else "—"),
             (tr("Left"), sysinfo.human_bytes(data["bytes_left"])),
             (tr("ETA"), format_eta(data["eta"]) if data["eta"] else "-"),
         )

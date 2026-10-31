@@ -4,4 +4,4 @@
     app/gui/    PySide6 window, dialogs, and widgets
 """
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"

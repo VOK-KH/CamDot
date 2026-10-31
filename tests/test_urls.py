@@ -13,12 +13,15 @@ from app.core.urls import (
     collection_strategy,
     detect_platform,
     extract_supported_urls,
+    instagram_shortcode,
+    instagram_username,
     is_bilibili_episode_url,
     is_bilibili_season_url,
     is_supported_source,
     looks_shell_truncated,
     normalize_channel_url,
     normalize_source_url,
+    tiktok_drama_ids,
     tiktok_sec_uid,
     tiktok_username,
     youtube_watch_with_list,
@@ -290,10 +293,25 @@ class ClassifySource(unittest.TestCase):
             classify_source("https://www.instagram.com/2002chii_/reposts/?hl=en"), FEED
         )
         self.assertEqual(classify_source("https://www.instagram.com/someone/tagged/"), FEED)
+        self.assertEqual(instagram_username("https://www.instagram.com/salysaouk/"), "salysaouk")
+        self.assertEqual(instagram_username("https://www.instagram.com/salysaouk/reels/"), "salysaouk")
+        self.assertEqual(instagram_username("https://www.instagram.com/p/AbC/"), "")
+        self.assertEqual(instagram_shortcode("https://www.instagram.com/reel/AbC123/"), "AbC123")
+        self.assertEqual(instagram_shortcode("https://www.instagram.com/someone/p/DeF/"), "DeF")
 
     def test_tiktok(self):
         self.assertEqual(classify_source("https://www.tiktok.com/@user/video/1"), SINGLE)
         self.assertEqual(classify_source("https://www.tiktok.com/@user"), FEED)
+        self.assertEqual(
+            classify_source("https://www.tiktok.com/shortdrama/episode/7697783154266756117/1"),
+            FEED,
+        )
+        self.assertEqual(
+            tiktok_drama_ids(
+                "https://www.tiktok.com/shortdrama/episode/7697783154266756117/1?_r=1"
+            ),
+            ("7697783154266756117", "1"),
+        )
         self.assertEqual(classify_source("https://www.tiktok.com/tag/dance"), UNSUPPORTED_FEED)
         self.assertEqual(classify_source("https://www.tiktok.com/"), UNSUPPORTED_FEED)
         with self.assertRaises(ValueError):

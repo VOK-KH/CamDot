@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor
 from app.core import icons, platform_icons, theme
 from app.core.i18n import tr
 from app.core.download import collapse_text, episode_leaf_name, is_series_package, post_label, reel_id
+from app.core.scrape import looks_like_view_count
 from app.core.urls import MOVIE_DRAMA_PLATFORMS, detect_platform
 from app.core.web_media import mp4_video_info, resolution_label
 
@@ -171,6 +172,11 @@ def media_kind(reel):
         return "music"
     if any(token in url for token in ("/photo", "/photos", "/p/", "/img")):
         if "/reel/" not in url and "/video/" not in url and "/watch" not in url:
+            quality = (getattr(reel, "quality", "") or "").lower()
+            if reel.duration or ext in {".mp4", ".webm", ".mkv", ".mov"}:
+                return "video"
+            if "mp4" in quality or "webm" in quality:
+                return "video"
             return "image"
     return "video"
 
@@ -575,17 +581,7 @@ class ReelModel(QAbstractTableModel):
         if role == VARIANT_OPTIONS_ROLE and column == COL_VARIANT and reel.variant == "image":
             return [label for _key, label in IMAGE_QUALITIES]
         if role == Qt.ItemDataRole.DecorationRole and column == COL_ICON:
-            if reel.variant in _KIND_ICONS:
-                return icons.icon(
-                    _KIND_ICONS[reel.variant], KIND_ICON_COLORS[reel.variant], 16,
-                )
-            if is_series_package(reel) or (
-                not reel.variant and package_has_children(self._reels, reel.url)
-            ):
-                return icons.icon("folder", KIND_ICON_COLORS["folder"], 16)
-            if not reel.variant and getattr(reel, "series_url", ""):
-                return icons.icon("kind-video", KIND_ICON_COLORS["video"], 16)
-            return None
+            return self._row_icon(reel)
         if role == Qt.ItemDataRole.DecorationRole and column == COL_HOST:
             color = "#e7ecf3" if self._dark else "#1c1e21"
             return platform_icons.icon_for(
@@ -658,6 +654,23 @@ class ReelModel(QAbstractTableModel):
         return True
 
     # --------------------------------------------------------------- state
+
+    def _kind_icon(self, kind):
+        if kind not in _KIND_ICONS:
+            return None
+        return icons.icon(_KIND_ICONS[kind], KIND_ICON_COLORS[kind], 16)
+
+    def _row_icon(self, reel):
+        """Folder or media-type icon (video / music / image / document)."""
+        if reel.variant in _KIND_ICONS:
+            return self._kind_icon(reel.variant)
+        if is_series_package(reel) or (
+            not reel.variant and package_has_children(self._reels, reel.url)
+        ):
+            return icons.icon("folder", KIND_ICON_COLORS["folder"], 16)
+        if not reel.variant and getattr(reel, "series_url", ""):
+            return self._kind_icon("video")
+        return self._kind_icon(media_kind(reel))
 
     def status_color(self, status):
         if status == "downloading":
@@ -735,7 +748,15 @@ class ReelModel(QAbstractTableModel):
                     "image_quality", "series", "series_url", "save_dir", "quality",
                 ):
                     value = data.get(field)
-                    if value and not getattr(reel, field):
+                    current = getattr(reel, field)
+                    weak = field in ("title", "description") and (
+                        not collapse_text(current)
+                        or collapse_text(current) == reel.rid
+                        or looks_like_view_count(current)
+                    )
+                    if value and (weak or not current):
+                        if field in ("title", "description") and looks_like_view_count(value):
+                            continue
                         setattr(reel, field, value)
                         changed = True
                 if data.get("duration") is not None and not reel.duration:

@@ -42,14 +42,15 @@ class InstanceGuardTests(unittest.TestCase):
         self.assertFalse(second.acquire())
 
     def test_ping_existing_notifies_the_owner(self):
-        first = self._guard()
-        second = self._guard()
-        raised = []
-        first.activate.connect(lambda: raised.append(True))
-        self.assertTrue(first.acquire())
-        self.assertTrue(second.ping_existing())
-        QApplication.processEvents()
-        self.assertTrue(raised)
+        with patch("app.gui.instance.SERVER_NAME", "CamDotGuiTestPing"):
+            first = self._guard()
+            second = self._guard()
+            raised = []
+            first.activate.connect(lambda: raised.append(True))
+            self.assertTrue(first.acquire())
+            self.assertTrue(second.ping_existing())
+            QApplication.processEvents()
+            self.assertTrue(raised)
 
     def test_release_allows_another_owner(self):
         first = self._guard()

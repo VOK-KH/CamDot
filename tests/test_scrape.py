@@ -3,11 +3,91 @@ import unittest
 
 from app.core.scrape import (
     _clean_caption,
+    dismiss_signup_dialog,
     harvest_new_reel_urls,
     harvest_reel_cards,
     instagram_media_url,
+    looks_like_view_count,
     ordered_reel_urls,
+    prefer_large_chrome_window,
+    present_browser_window,
 )
+
+
+class DismissSignupDialog(unittest.TestCase):
+    def test_clicks_the_close_control(self):
+        class Element:
+            def __init__(self):
+                self.clicked = False
+
+            def click(self):
+                self.clicked = True
+
+        class Driver:
+            def __init__(self):
+                self.element = Element()
+
+            def find_elements(self, by, xpath):
+                if "aria-label='Close'" in xpath:
+                    return [self.element]
+                return []
+
+        driver = Driver()
+        self.assertTrue(dismiss_signup_dialog(driver))
+        self.assertTrue(driver.element.clicked)
+
+
+class ChromeWindowSize(unittest.TestCase):
+    def test_saved_window_is_rewritten_to_the_work_area(self):
+        import json
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            default = os.path.join(folder, "Default")
+            os.makedirs(default)
+            path = os.path.join(default, "Preferences")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "browser": {
+                        "window_placement": {
+                            "left": 10, "top": 210, "right": 955, "bottom": 1230,
+                            "maximized": True,
+                        }
+                    }
+                }, handle)
+            self.assertTrue(prefer_large_chrome_window(folder, (0, 0, 1920, 1040)))
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)["browser"]["window_placement"]
+        self.assertEqual(saved["right"] - saved["left"], 1920)
+        self.assertEqual(saved["bottom"] - saved["top"], 1040)
+        self.assertTrue(saved["maximized"])
+
+    def test_present_browser_window_uses_the_work_area(self):
+        class Driver:
+            def __init__(self):
+                self.rect = None
+                self.maximized = False
+
+            def set_window_rect(self, x, y, width, height):
+                self.rect = (x, y, width, height)
+
+            def maximize_window(self):
+                self.maximized = True
+
+        driver = Driver()
+        present_browser_window(driver, (0, 0, 1920, 1040))
+        self.assertEqual(driver.rect, (0, 0, 1920, 1040))
+        self.assertTrue(driver.maximized)
+
+
+class ViewCountLabels(unittest.TestCase):
+    def test_view_counts_are_not_captions(self):
+        self.assertEqual(_clean_caption("10.8k"), "")
+        self.assertEqual(_clean_caption("237k"), "")
+        self.assertEqual(_clean_caption("1,082 views"), "")
+        self.assertEqual(_clean_caption("Good morning"), "Good morning")
+        self.assertFalse(looks_like_view_count("ចំណង់ចំណូលចិត្ត"))
 
 
 class OrderedReelUrls(unittest.TestCase):

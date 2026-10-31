@@ -15,6 +15,7 @@ from app.core.model import (
     COL_ETA,
     COL_FILE,
     COL_HOST,
+    COL_ICON,
     COL_ID,
     COL_PROGRESS,
     COL_SIZE,
@@ -101,6 +102,19 @@ class Model(unittest.TestCase):
 
     def _display(self, row, column):
         return self.model.data(self.model.index(row, column), Qt.ItemDataRole.DisplayRole)
+
+    def test_single_source_icon_column_shows_media_kind(self):
+        self.assertEqual(media_kind(self.model.reel_at(0)), "video")
+        icon = self.model.index(0, COL_ICON).data(Qt.ItemDataRole.DecorationRole)
+        self.assertFalse(icon.isNull())
+
+        self.model.set_urls([{
+            "url": "https://x.com/name/status/2085223295776100697/photo/1",
+            "title": "A photo",
+        }])
+        self.assertEqual(media_kind(self.model.reel_at(0)), "image")
+        icon = self.model.index(0, COL_ICON).data(Qt.ItemDataRole.DecorationRole)
+        self.assertFalse(icon.isNull())
 
     def test_rows_start_queued(self):
         self.assertEqual(self.model.rowCount(), 3)
@@ -604,6 +618,10 @@ class SeriesPackageProgress(unittest.TestCase):
             self.model.index(0, COL_TITLE).data(),
             "Back as Immortal Lord (2 EP)",
         )
+        folder = self.model.index(0, COL_ICON).data(Qt.ItemDataRole.DecorationRole)
+        episode = self.model.index(1, COL_ICON).data(Qt.ItemDataRole.DecorationRole)
+        self.assertFalse(folder.isNull())
+        self.assertFalse(episode.isNull())
         # Checking one episode makes the root folder PartiallyChecked.
         self.model.setData(
             self.model.index(1, COL_CHECK),
